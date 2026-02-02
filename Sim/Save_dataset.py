@@ -1,3 +1,8 @@
+"""
+python Save_dataset.py --no-randomize-phantom-pos
+"""
+
+
 import os
 os.environ['MUJOCO_GL'] = 'egl'
 
@@ -185,7 +190,7 @@ def main():
     def get_ee_pose_6d_scaled():
         """Get 6_link world pose (x, y, z, rx, ry, rz)."""
         if link6_id >= 0:
-            pos = data.xpos[link6_id].copy() * 1000.0
+            pos = data.xpos[link6_id].copy() * 1000
             mat = data.xmat[link6_id].reshape(3, 3)
             sy = np.sqrt(mat[0, 0] ** 2 + mat[1, 0] ** 2)
             if sy > 1e-6:
