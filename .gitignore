@@ -6,6 +6,28 @@ __pycache__/
 # C extensions
 *.so
 
+# 다수 이미지 데이터 생략을 위해 랜덤 배경은 제외
+random_backgrounds/
+
+# 데이터셋 제외
+*.h5
+*.hdf5
+*.tfrecord
+*.mp4
+
+# 모델 또는 출력결과물
+output/
+outputs/
+*.pt
+*.npz
+
+# 학습 로그 관련
+wandb/
+
+# git cloen
+lerobot/
+nora/
+
 # Distribution / packaging
 .Python
 build/
