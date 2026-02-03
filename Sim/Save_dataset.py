@@ -29,7 +29,7 @@ MAX_EPISODES = 1
 IMG_WIDTH = 640
 IMG_HEIGHT = 480
 TARGET_INSERTION_DEPTH = 0.0275
-TRAJ_DURATION = 15.0
+TRAJ_DURATION = 15.0 # np.random.uniform(12.0, 18.0)
 
 # === Recorder Class (수정됨: sensor_dist 저장 로직 추가) ===
 class SimRecorder:
@@ -211,8 +211,8 @@ def main():
     while episode_count < MAX_EPISODES:
         mujoco.mj_resetData(model, data)
         data.qpos[:6] = home_pose
-        if args.randomize_phantom_pos:
-            randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
+        # if args.randomize_phantom_pos:
+        #     randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
         mujoco.mj_forward(model, data)
         
         last_ee_pose = get_ee_pose_6d_scaled()

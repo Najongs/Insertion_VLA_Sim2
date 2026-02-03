@@ -13,10 +13,10 @@ export OMP_NUM_THREADS=4
 
 # 2. 경로 설정
 CONFIG_FILE="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/train_config_smolvla_sim.yaml"
-CHECKPOINT="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_18000.pt"
+CHECKPOINT="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_2000_new.pt"
 
 # 3. 학습 실행
 torchrun --nproc-per-node=5 train_smolvla_sim.py \
-    --config "$CONFIG_FILE" \
+    --config "$CONFIG_FILE"
     --resume "$CHECKPOINT" \
     --reset_scheduler

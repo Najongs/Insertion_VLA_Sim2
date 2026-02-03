@@ -1,21 +1,5 @@
 #!/usr/bin/env python
 """
-SmolVLA Training script for Simulation Data (Meca500 + Vision-Language-Action)
-
-Based on train_smolvla.py but adapted for simulation data from Eye_trocar_sim dataset
-
-Key Differences from Real Data Training:
-- Uses simulation data with domain randomization (DR) applied during data collection
-- Camera names might be different (side_camera, tool_camera, top_camera)
-- No need for additional data augmentation since DR was already applied
-- Higher learning rate possible due to consistent sim data
-
-Memory Requirements:
-- Expert-Only Training: ~12-16 GB per GPU (fits on RTX 3090/4090)
-
-Usage:
-    python train_smolvla_sim.py --config train_config_smolvla_sim.yaml
-
 DDP Usage:
     torchrun --nproc_per_node=5 train_smolvla_sim.py --config train_config_smolvla_sim.yaml
 """
@@ -29,7 +13,7 @@ import gc
 import json
 import csv
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from contextlib import nullcontext
 import yaml
 
@@ -271,8 +255,11 @@ def create_dataset_from_config(config: Dict, val_split: bool = False) -> Tuple[t
         squeeze_n_obs_steps=(policy_cfg.get("n_obs_steps", 1) == 1),
         use_qpos=dataset_cfg.get("use_qpos", False),
         use_ee_pose=dataset_cfg.get("use_ee_pose", True),
+        use_sensor=dataset_cfg.get("use_sensor", False),
         use_ee_pose_delta_as_action=dataset_cfg.get("use_ee_pose_delta_as_action", False),
-        task_instruction=dataset_cfg.get("task_instruction", "Insert needle into eye trocar in simulation."),
+        task_instruction=dataset_cfg.get("task_instruction", "Move the needle to the eye phantom and insert it through the trocar opening"),
+        task_instruction1=dataset_cfg.get("task_instruction1", "Move the needle to the eye phantom"),
+        task_instruction2=dataset_cfg.get("task_instruction2", "insert the needle through the eye phantom trocar opening"),
         tokenizer=tokenizer,
         tokenizer_max_length=tokenizer_max_length,
         # NO augmentation for sim data - DR was already applied during collection
@@ -297,8 +284,11 @@ def create_dataset_from_config(config: Dict, val_split: bool = False) -> Tuple[t
             squeeze_n_obs_steps=(policy_cfg.get("n_obs_steps", 1) == 1),
             use_qpos=dataset_cfg.get("use_qpos", False),
             use_ee_pose=dataset_cfg.get("use_ee_pose", True),
+            use_sensor=dataset_cfg.get("use_sensor", False),
             use_ee_pose_delta_as_action=dataset_cfg.get("use_ee_pose_delta_as_action", False),
             task_instruction=dataset_cfg.get("task_instruction", "Insert needle into eye trocar in simulation."),
+            task_instruction1=dataset_cfg.get("task_instruction1", "Move the needle to the eye phantom"),
+            task_instruction2=dataset_cfg.get("task_instruction2", "insert the needle through the eye phantom trocar opening"),
             tokenizer=tokenizer,
             tokenizer_max_length=tokenizer_max_length,
             augment=False,
@@ -333,14 +323,21 @@ def create_policy_from_config(config: Dict, device: torch.device) -> SmolVLAPoli
     dataset_cfg = config["dataset"]
     use_ee_pose = dataset_cfg.get("use_ee_pose", True)
     use_qpos = dataset_cfg.get("use_qpos", False)
+    use_sensor = dataset_cfg.get("use_sensor", False)
 
     # State dimension: 6 for both ee_pose and qpos
     # ee_pose = [x, y, z, rx, ry, rz] (position + euler angles)
     # qpos = [q1, q2, q3, q4, q5, q6] (joint angles)
-    state_dim = 6
+    state_dim = 0
+    if use_ee_pose: state_dim += 6
+    if use_qpos: state_dim += 6
+    if use_sensor: state_dim += 1
+    
+    # Fallback default if nothing selected
+    if state_dim == 0: state_dim = 6
 
     if is_main_process():
-        logger.info(f"State dimension: {state_dim} (use_ee_pose={use_ee_pose}, use_qpos={use_qpos})")
+        logger.info(f"State dimension: {state_dim} (use_ee_pose={use_ee_pose}, use_qpos={use_qpos}, use_sensor={use_sensor})")
 
     # Create SmolVLAConfig
     smolvla_config = SmolVLAConfig(
@@ -444,15 +441,31 @@ def normalize_batch(batch: dict, normalizer: Optional[Normalizer], device: torch
 
     normalized_batch = {}
     for key, value in batch.items():
+        # Move value to device first
+        val_device = value.to(device) if isinstance(value, torch.Tensor) else value
+
         if key == "observation.state":
-            # Normalize state
-            normalized_batch[key] = normalizer.normalize(value.to(device), key)
+            # Check for dimension mismatch (e.g. 7D input vs 6D stats)
+            # This happens when we add sensor data (1D) to robot state (6D)
+            # Use tensor_stats instead of stats to ensure we have tensors with shape
+            stats_dim = normalizer.tensor_stats[key]["mean"].shape[0]
+            input_dim = val_device.shape[-1]
+
+            if input_dim > stats_dim:
+                # Split: [batch, 6] normalized, [batch, 1] raw
+                state_to_norm = val_device[..., :stats_dim]
+                sensor_data = val_device[..., stats_dim:]
+                
+                norm_state = normalizer.normalize(state_to_norm, key)
+                normalized_batch[key] = torch.cat([norm_state, sensor_data], dim=-1)
+            else:
+                normalized_batch[key] = normalizer.normalize(val_device, key)
         elif key == "action":
             # Normalize action
-            normalized_batch[key] = normalizer.normalize(value.to(device), key)
+            normalized_batch[key] = normalizer.normalize(val_device, key)
         else:
             # Keep other keys as-is
-            normalized_batch[key] = value.to(device) if isinstance(value, torch.Tensor) else value
+            normalized_batch[key] = val_device
 
     return normalized_batch
 
@@ -464,6 +477,7 @@ def evaluate_validation(
     normalizer: Optional[Normalizer] = None,
     use_amp: bool = False,
     max_batches: Optional[int] = None,
+    is_distributed: bool = False,
 ) -> Dict[str, float]:
     """
     Evaluate policy on validation set.
@@ -474,6 +488,7 @@ def evaluate_validation(
         normalizer: Optional normalizer for state and action
         use_amp: Use automatic mixed precision
         max_batches: Maximum number of batches to evaluate (None = all)
+        is_distributed: Whether running in distributed mode
 
     Returns:
         Dictionary with validation metrics
@@ -483,6 +498,7 @@ def evaluate_validation(
 
     total_loss = 0.0
     total_action_loss = 0.0
+    total_metrics = {}
     num_batches = 0
 
     for batch_idx, batch in enumerate(val_dataloader):
@@ -503,17 +519,61 @@ def evaluate_validation(
 
         total_loss += loss.item()
         total_action_loss += action_loss.item()
+        
+        # Accumulate all metrics from loss_dict
+        for k, v in loss_dict.items():
+            if isinstance(v, torch.Tensor):
+                if v.numel() > 1:
+                    v = v.mean().item()
+                else:
+                    v = v.item()
+            total_metrics[k] = total_metrics.get(k, 0.0) + v
+            
         num_batches += 1
 
-    # Average metrics
-    avg_loss = total_loss / max(num_batches, 1)
-    avg_action_loss = total_action_loss / max(num_batches, 1)
+    # Distributed Aggregation
+    if is_distributed:
+        # Create tensor for [total_loss, total_action_loss, num_batches]
+        # and one for each extra metric
+        
+        # 1. Base metrics
+        base_metrics = torch.tensor([total_loss, total_action_loss, float(num_batches)], device=device)
+        dist.all_reduce(base_metrics, op=dist.ReduceOp.SUM)
+        
+        total_loss = base_metrics[0].item()
+        total_action_loss = base_metrics[1].item()
+        total_batches_all = base_metrics[2].item()
+        
+        # 2. Detailed metrics (assuming same keys on all ranks)
+        # Sort keys to ensure consistent order
+        metric_keys = sorted(total_metrics.keys())
+        if metric_keys:
+            metric_vals = [total_metrics[k] for k in metric_keys]
+            metric_tensor = torch.tensor(metric_vals, device=device)
+            dist.all_reduce(metric_tensor, op=dist.ReduceOp.SUM)
+            
+            for i, k in enumerate(metric_keys):
+                total_metrics[k] = metric_tensor[i].item()
+                
+        # Use aggregated batch count for averaging
+        avg_divisor = max(total_batches_all, 1)
+    else:
+        avg_divisor = max(num_batches, 1)
 
-    return {
+    # Average metrics
+    avg_loss = total_loss / avg_divisor
+    avg_action_loss = total_action_loss / avg_divisor
+    
+    results = {
         "val/loss": avg_loss,
         "val/action_loss": avg_action_loss,
     }
+    
+    # Add averaged detailed metrics
+    for k, v in total_metrics.items():
+        results[f"val/{k}"] = v / avg_divisor
 
+    return results
 
 def update_policy(
     policy: nn.Module,
@@ -985,8 +1045,9 @@ def train(
             start_time = time.time()
 
         # Validation
-        if val_dataloader is not None and (step + 1) % val_freq == 0 and is_main_process():
-            logger.info(f"Running validation at step {step + 1}...")
+        if val_dataloader is not None and (step + 1) % val_freq == 0:
+            if is_main_process():
+                logger.info(f"Running validation at step {step + 1}...")
 
             val_metrics = evaluate_validation(
                 policy,
@@ -994,19 +1055,20 @@ def train(
                 normalizer=normalizer,
                 use_amp=use_amp,
                 max_batches=None,
+                is_distributed=dist.is_initialized(),
             )
+            
+            # Logging (Main Process Only)
+            if is_main_process():
+                val_msg = f"[VAL] Step {step + 1} | Loss: {val_metrics['val/loss']:.4f} | Action Loss: {val_metrics['val/action_loss']:.4f}"
+                pbar.write(val_msg) if pbar is not None else logger.info(val_msg)
 
-            val_msg = f"[VAL] Step {step + 1} | Loss: {val_metrics['val/loss']:.4f} | Action Loss: {val_metrics['val/action_loss']:.4f}"
-            pbar.write(val_msg) if pbar is not None else logger.info(val_msg)
-
-            if wandb_run is not None:
-                val_log_dict = {
-                    "val/loss": float(val_metrics['val/loss']),
-                    "val/action_loss": float(val_metrics['val/action_loss']),
-                    "step": int(step + 1),
-                }
-                wandb.log(val_log_dict)
-                del val_log_dict
+                if wandb_run is not None:
+                    # Log all metrics returned by evaluate_validation
+                    val_log_dict = val_metrics.copy()
+                    val_log_dict["step"] = int(step + 1)
+                    wandb.log(val_log_dict)
+                    del val_log_dict
 
             policy.train()
 
@@ -1210,6 +1272,8 @@ def main():
     # Create validation dataloader if validation is enabled
     val_dataloader = None
     if validation_enabled and val_dataset is not None:
+        val_sampler = DistributedSampler(val_dataset, shuffle=False, drop_last=False) if is_distributed else None
+        
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=config["training"]["batch_size"],
@@ -1220,9 +1284,10 @@ def main():
             drop_last=False,
             prefetch_factor=2 if num_workers > 0 else None,
             persistent_workers=(num_workers > 0),
+            sampler=val_sampler,
         )
         if is_main_process():
-            logger.info(f"Validation dataloader created")
+            logger.info(f"Validation dataloader created (Distributed: {val_sampler is not None})")
 
     dataloader = train_dataloader
 
@@ -1263,7 +1328,7 @@ def main():
             policy,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=True,
+            find_unused_parameters=False,
         )
         if is_main_process():
             logger.info("Policy wrapped with DistributedDataParallel")

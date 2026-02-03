@@ -9,7 +9,7 @@ Usage:
 python compute_dataset_stats.py \
     --dataset_root /home/najo/NAS/VLA/Insertion_VLA_Sim2/Dataset \
     --output dataset_stats.yaml \
-    --max_episodes 1000
+    --max_episodes 2000
 """
 
 import argparse

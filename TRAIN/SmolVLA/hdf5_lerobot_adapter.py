@@ -72,8 +72,11 @@ class HDF5LeRobotDataset(Dataset):
         n_obs_steps: int = 1,
         use_qpos: bool = False,
         use_ee_pose: bool = True,
+        use_sensor: bool = False,
         use_ee_pose_delta_as_action: bool = False,
         task_instruction: str = "Insert the needle into the target point",
+        task_instruction1: str = "Move the needle to the eye phantom",
+        task_instruction2: str = "insert the needle through the eye phantom trocar opening",
         camera_dropout_prob: float = 0.0,
         min_cameras: int = 1,
         augment: bool = True,
@@ -122,13 +125,16 @@ class HDF5LeRobotDataset(Dataset):
         self.squeeze_n_obs_steps = squeeze_n_obs_steps
         self.use_qpos = use_qpos
         self.use_ee_pose = use_ee_pose
+        self.use_sensor = use_sensor
         self.use_ee_pose_delta_as_action = use_ee_pose_delta_as_action
 
         # Tokenizer for language conditioning (will be used after loading HDF5)
         self.tokenizer = tokenizer
         self.tokenizer_max_length = tokenizer_max_length
-        # Store default task instruction (will be overridden if HDF5 has language_instruction)
+        # Store task instructions
         self.default_task_instruction = task_instruction
+        self.task_instruction1 = task_instruction1
+        self.task_instruction2 = task_instruction2
 
         # Augmentation settings
         self.camera_dropout_prob = camera_dropout_prob
@@ -143,30 +149,30 @@ class HDF5LeRobotDataset(Dataset):
         # Load HDF5 file
         self.h5file = h5py.File(str(self.hdf5_path), 'r')
 
-        # Use task instruction from config (ignore HDF5 language_instruction and phase)
-        # This ensures consistent single instruction across all episodes for unified training
-        self.task = self.default_task_instruction
-        if episode_index == 0:
-            logger.info(f"Using single task instruction for all episodes: {self.task}")
-
         # Get dataset shapes
         self.num_frames = self.h5file['action'].shape[0]
 
-        # Now tokenize the task instruction (after reading from HDF5)
+        # Tokenize task instructions
         if self.tokenizer is not None:
-            self.tokenized_task = self.tokenizer(
-                self.task,
-                max_length=self.tokenizer_max_length,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt"
-            )
-            # Extract tokens and attention mask (remove batch dimension)
-            self.task_tokens = self.tokenized_task["input_ids"].squeeze(0)  # (max_length,)
-            self.task_attention_mask = self.tokenized_task["attention_mask"].squeeze(0)  # (max_length,)
+            # Helper to tokenize a string
+            def tokenize_str(text):
+                out = self.tokenizer(
+                    text,
+                    max_length=self.tokenizer_max_length,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt"
+                )
+                return out["input_ids"].squeeze(0), out["attention_mask"].squeeze(0)
+
+            # Tokenize default and specific instructions
+            self.default_tokens, self.default_mask = tokenize_str(self.default_task_instruction)
+            self.task1_tokens, self.task1_mask = tokenize_str(self.task_instruction1)
+            self.task2_tokens, self.task2_mask = tokenize_str(self.task_instruction2)
         else:
-            self.task_tokens = None
-            self.task_attention_mask = None
+            self.default_tokens = self.default_mask = None
+            self.task1_tokens = self.task1_mask = None
+            self.task2_tokens = self.task2_mask = None
 
         # Get actual camera names from HDF5 file
         self.actual_camera_names = sorted(list(self.h5file['observations']['images'].keys()))
@@ -181,12 +187,14 @@ class HDF5LeRobotDataset(Dataset):
             self.camera_name_mapping[expected_name] = actual_name
 
         # Determine state dimension
-        if use_qpos and use_ee_pose:
-            self.state_dim = 12  # qpos (6) + ee_pose (6)
-        elif use_qpos:
-            self.state_dim = 6  # qpos only
-        else:
-            self.state_dim = 6  # ee_pose only (default)
+        self.state_dim = 0
+        if use_qpos:
+            self.state_dim += 6
+        if use_ee_pose:
+            self.state_dim += 6
+        # Sensor is added AFTER normalization, but counts towards total dimension
+        if use_sensor:
+            self.state_dim += 1
 
         # Detect image format (JPEG vs GZIP)
         self.is_jpeg_format = self._detect_image_format()
@@ -371,7 +379,7 @@ class HDF5LeRobotDataset(Dataset):
         # Create LeRobot sample (metadata from current frame)
         lerobot_sample = {
             # Metadata
-            "task": self.task,
+            "task": self.default_task_instruction,
             "phase": phase_label,
             "phase_id": phase_id if phase_id is not None else -1,
             "timestamp": float(self.h5file['timestamp'][idx]),
@@ -491,24 +499,49 @@ class HDF5LeRobotDataset(Dataset):
                 ee_pose = self.h5file['observations']['ee_pose'][obs_idx]
                 state_parts.append(ee_pose)
 
-            # Concatenate state parts
+            # Concatenate robot state parts (normalized usually)
             if len(state_parts) > 1:
-                state = np.concatenate(state_parts, axis=0)
+                robot_state = np.concatenate(state_parts, axis=0)
+            elif len(state_parts) == 1:
+                robot_state = state_parts[0]
             else:
-                state = state_parts[0]
+                robot_state = np.array([], dtype=np.float32)
 
             # Convert to tensor
-            state_tensor = torch.from_numpy(state.astype(np.float32))
+            state_tensor = torch.from_numpy(robot_state.astype(np.float32))
+
+            # Apply state normalization only to robot state parts (before adding sensor)
+            if self.normalizer is not None and state_tensor.numel() > 0:
+                state_tensor = self.normalizer.normalize(
+                    state_tensor, "observation.state"
+                )
+
+            # Process Sensor Data (append AFTER normalization)
+            if self.use_sensor:
+                # Load sensor distance (mm)
+                # Logic: < 3.7mm -> 1.0 (detected), else -> 0.0 (not detected)
+                if 'sensor_dist' in self.h5file['observations']:
+                    raw_dist = self.h5file['observations']['sensor_dist'][obs_idx]
+                    # Check if detected (>= 0) AND within range (< 3.7)
+                    if 0.0 <= raw_dist < 3.7:
+                        sensor_val = 1.0
+                    else:
+                        sensor_val = 0.0
+                else:
+                    # Fallback if sensor data missing
+                    sensor_val = 0.0
+                
+                sensor_tensor = torch.tensor([sensor_val], dtype=torch.float32)
+                
+                # Concatenate: [Robot_State(Normalized), Sensor(0/1)]
+                state_tensor = torch.cat([state_tensor, sensor_tensor], dim=0)
+
             state_tensors.append(state_tensor)
 
         # Stack temporal states: list of (state_dim,) -> (n_obs_steps, state_dim)
         lerobot_sample["observation.state"] = torch.stack(state_tensors, dim=0)
 
-        # Apply state normalization if normalizer is available
-        if self.normalizer is not None:
-            lerobot_sample["observation.state"] = self.normalizer.normalize(
-                lerobot_sample["observation.state"], "observation.state"
-            )
+        # NOTE: Normalization is already applied per-step above to handle the sensor mismatch
 
         # Squeeze temporal dimension if requested (for ACT compatibility)
         if self.squeeze_n_obs_steps and self.n_obs_steps == 1:
@@ -594,10 +627,48 @@ class HDF5LeRobotDataset(Dataset):
                 lerobot_sample["action"], "action"
             )
 
+        # Determine which instruction to use for this frame
+        current_task_str = self.default_task_instruction
+
+        # Logic to determine phase:
+        # 1. Use explicit 'phase' info if available
+        # 2. Use 'sensor_dist' if available (Implicit phase inference)
+        # 3. Fallback to default
+
+        is_phase2 = False
+
+        if self.has_phase:
+            # If phase info exists: 1=Align (Phase1), 2=Insert (Phase2), 3=Hold (Phase2/3)
+            p_id = int(self.h5file['phase'][idx])
+            if p_id >= 2: # Phase 2 or 3 -> Insert instruction
+                is_phase2 = True
+        elif 'sensor_dist' in self.h5file['observations']:
+            # Infer phase from sensor distance
+            # Dist < 3.7mm means needle is close/inside -> Phase 2
+            dist = self.h5file['observations']['sensor_dist'][idx]
+            if dist < 3.7:
+                is_phase2 = True
+
+        # Select task string
+        if is_phase2:
+            current_task_str = self.task_instruction2
+        else:
+            current_task_str = self.task_instruction1
+
+        # Update task string in metadata
+        lerobot_sample["task"] = current_task_str
+
         # Add language tokens if tokenizer is available
-        if self.task_tokens is not None:
-            lerobot_sample["observation.language.tokens"] = self.task_tokens.clone()
-            lerobot_sample["observation.language.attention_mask"] = self.task_attention_mask.clone()
+        if self.tokenizer is not None:
+            if is_phase2:
+                selected_tokens = self.task2_tokens
+                selected_mask = self.task2_mask
+            else:
+                selected_tokens = self.task1_tokens
+                selected_mask = self.task1_mask
+
+            lerobot_sample["observation.language.tokens"] = selected_tokens.clone()
+            lerobot_sample["observation.language.attention_mask"] = selected_mask.clone()
 
         return lerobot_sample
 
@@ -631,8 +702,11 @@ def create_hdf5_lerobot_dataset(
     n_obs_steps: int = 1,
     use_qpos: bool = False,
     use_ee_pose: bool = True,
+    use_sensor: bool = False,
     use_ee_pose_delta_as_action: bool = False,
-    task_instruction: str = "Insert the needle into the target point",
+    task_instruction: str = "Move the needle to the eye phantom and insert it through the trocar opening",
+    task_instruction1: str = "Move the needle to the eye phantom",
+    task_instruction2: str = "insert the needle through the eye phantom trocar opening",
     camera_dropout_prob: float = 0.0,
     min_cameras: int = 1,
     augment: bool = True,
@@ -692,8 +766,11 @@ def create_hdf5_lerobot_dataset(
                 n_obs_steps=n_obs_steps,
                 use_qpos=use_qpos,
                 use_ee_pose=use_ee_pose,
+                use_sensor=use_sensor,
                 use_ee_pose_delta_as_action=use_ee_pose_delta_as_action,
                 task_instruction=task_instruction,
+                task_instruction1=task_instruction1,
+                task_instruction2=task_instruction2,
                 camera_dropout_prob=camera_dropout_prob,
                 min_cameras=min_cameras,
                 augment=augment,

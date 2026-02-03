@@ -30,10 +30,10 @@ from transformers import AutoTokenizer
 # === Configuration ===
 CONFIG_PATH = os.path.join(SMOLVLA_DIR, "train_config_smolvla_sim.yaml")
 STATS_PATH = os.path.join(SMOLVLA_DIR, "dataset_stats.yaml")
-CHECKPOINT_PATH = "/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_18000.pt"
+CHECKPOINT_PATH = "/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_10000.pt"
 MODEL_XML = os.path.join(SCRIPT_DIR, "meca_add.xml")
 OUTPUT_PATH = os.path.join(SCRIPT_DIR, "collected_data_sim_clean/smolvla_inference_rollout.h5")
-MAX_STEPS = 1000
+MAX_STEPS = 500
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_config(path):
@@ -60,7 +60,7 @@ class SmolVLASimInference:
                 "observation.images.camera1": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512)),
                 "observation.images.camera2": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512)),
                 "observation.images.camera3": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512)),
-                "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(6,)),
+                "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(7,)),
             },
             output_features={
                 "action": PolicyFeature(type=FeatureType.ACTION, shape=(6,)),
@@ -105,10 +105,11 @@ class SmolVLASimInference:
         self.lang_mask = tokens["attention_mask"].to(DEVICE)
 
     @torch.no_grad()
-    def step(self, images, state_6d):
+    def step(self, images, state_6d, sensor_val):
         # Prepare Batch
         # images: list of [H, W, 3] BGR
         # state_6d: [6]
+        # sensor_val: float (0.0 or 1.0)
         
         batch = {}
         # 1. Images: [1, 3, 512, 512] and range [0, 1]
@@ -117,10 +118,17 @@ class SmolVLASimInference:
             img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
             batch[f"observation.images.camera{i+1}"] = img_tensor.unsqueeze(0).to(DEVICE) # (1, 3, H, W)
             
-        # 2. State
+        # 2. State (Robot State Normalized + Sensor Appended)
         state_tensor = torch.from_numpy(state_6d).float().unsqueeze(0).to(DEVICE)
+        
+        # Apply normalization only to robot state part (first 6 dims)
         if self.normalizer:
             state_tensor = self.normalizer.normalize(state_tensor, "observation.state")
+            
+        # Append Sensor Data (0 or 1)
+        sensor_tensor = torch.tensor([[sensor_val]], dtype=torch.float32).to(DEVICE)
+        state_tensor = torch.cat([state_tensor, sensor_tensor], dim=1) # (1, 7)
+
         batch[OBS_STATE] = state_tensor
         
         # 3. Language
@@ -181,6 +189,21 @@ def solve_ik(model, data, target_pos_m, target_rot_mat, link_id, q_init, n_motor
         mujoco.mj_forward(model, data)
     return data.qpos[:n_motors].copy()
 
+def randomize_phantom_pos(model, data, phantom_id, rot_id):
+    # 1. 위치 이동 (Translation)
+    offset_x = np.random.uniform(-0.05, 0.0)
+    offset_y = np.random.uniform(0.0, 0.03)
+    offset_z = 0.0 # np.random.uniform(0.0, 0.1) 
+    model.body_pos[phantom_id] = np.array([offset_x, offset_y, offset_z])
+    
+    # 2. 회전 (Rotation)
+    random_angle_deg = np.random.uniform(-15, 15)
+    new_quat = np.zeros(4)
+    mujoco.mju_euler2Quat(new_quat, [0, 0, np.deg2rad(random_angle_deg)], "xyz")
+    model.body_quat[rot_id] = new_quat
+    print(f">>> Randomize: Pos=({offset_x:.2f}, {offset_y:.2f}), Angle={random_angle_deg:.1f} deg")
+    mujoco.mj_forward(model, data)
+
 def main():
     # Setup Sim
     model = mujoco.MjModel.from_xml_path(MODEL_XML)
@@ -189,6 +212,17 @@ def main():
     # SmolVLAPolicy will resize this to 512x512 internally.
     renderer = mujoco.Renderer(model, height=480, width=480)
     link6_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "6_Link")
+    
+    # IDs for Sensor Raycasting
+    try:
+        tip_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "needle_tip")
+        back_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "needle_back")
+        rotating_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rotating_assembly")
+        phantom_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "phantom_assembly")
+    except:
+        print("⚠️ Warning: Needle IDs not found for raycasting. Sensor will be 0.")
+        tip_id, back_id = -1, -1
+
     n_motors = model.nu
 
     # Load SmolVLA
@@ -196,9 +230,12 @@ def main():
 
     # Buffer for saving
     buffer = []
-
+    home_pose = np.array([0.5236, -0.3491, 0.3491, 0.0000, 0.5236, 1.0472]) # (30, -20, 20, 0, 30, 60)
+    
     print(f"🎬 Starting SmolVLA Rollout for {MAX_STEPS} steps...")
     mujoco.mj_resetData(model, data)
+    data.qpos[:6] = home_pose
+    randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
     mujoco.mj_forward(model, data)
 
     for t in tqdm(range(MAX_STEPS), desc="Rollout"):
@@ -208,11 +245,26 @@ def main():
             renderer.update_scene(data, camera=cam_name)
             cam_images.append(cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR))
         
-        # 2. Get State
+        # 2. Get State & Sensor Data
         curr_state = get_ee_pose_6d(data, link6_id)
         
+        # Calculate Sensor Value (Raycasting)
+        sensor_val = 0.0
+        if tip_id >= 0 and back_id >= 0:
+            p_sensor = data.site_xpos[tip_id].copy()
+            p_back = data.site_xpos[back_id].copy()
+            needle_dir = (p_sensor - p_back) / (np.linalg.norm(p_sensor - p_back) + 1e-10)
+            
+            # Raycast: start=p_sensor, dir=needle_dir, geomgroup=None, flg_static=1, bodyexclude=link6_id, geomexclude=0
+            dist_to_surface = mujoco.mj_ray(model, data, p_sensor, needle_dir, None, 1, link6_id, np.zeros(1, dtype=np.int32))
+            
+            if dist_to_surface >= 0:
+                dist_mm = dist_to_surface * 1000.0
+                if dist_mm < 3.7:
+                    sensor_val = 1.0
+
         # 3. Inference
-        action = vla.step(cam_images, curr_state)
+        action = vla.step(cam_images, curr_state, sensor_val)
         
         # 4. Apply Action (Treating action as Delta EE Pose)
         delta_ee = action[:6] # [dx, dy, dz, dr, dp, dy]
