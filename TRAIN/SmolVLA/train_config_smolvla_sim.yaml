@@ -96,7 +96,7 @@ training:
   # Training steps
   # Simulation data is more consistent, so can converge faster
   # Start with 30k steps, adjust as needed
-  steps: 30000
+  steps: 20000
 
   # Batch size (adjust for your GPU memory)
   # With 5 GPUs: 16 per GPU = 80 total
@@ -107,7 +107,7 @@ training:
 
   # DataLoader settings
   num_workers: 0         # 0 for multi-GPU to avoid RAM issues
-  pin_memory: true
+  pin_memory: false
 
   # Logging and saving
   log_freq: 100
@@ -137,7 +137,7 @@ validation:
   num_episodes: 20
 
   # Validation frequency (every N steps)
-  val_freq: 2000
+  val_freq: 500
 
 # Optimizer Configuration
 # -----------------------------------------
@@ -153,10 +153,10 @@ optimizer:
 # ----------------------------------------------------
 scheduler:
   # Warmup steps (~3% of total steps)
-  num_warmup_steps: 1000
+  num_warmup_steps: 100
 
   # Cosine decay
-  num_decay_steps: 30000
+  num_decay_steps: 20000
   peak_lr: 0.0001        # 1e-4
   decay_lr: 0.0000025    # 2.5e-6
 
