@@ -247,6 +247,26 @@ def create_dataset_from_config(config: Dict, val_split: bool = False) -> Tuple[t
         "top_camera": "camera3",
     }
 
+    # Get task instructions from config
+    task_instruction = dataset_cfg.get("task_instruction", "Move the needle to the eye phantom and insert it through the trocar opening")
+    task_instruction1 = dataset_cfg.get("task_instruction1", None)
+    task_instruction2 = dataset_cfg.get("task_instruction2", None)
+
+    # If task_instruction1 or task_instruction2 not provided, use task_instruction
+    if task_instruction1 is None:
+        task_instruction1 = task_instruction
+    if task_instruction2 is None:
+        task_instruction2 = task_instruction
+
+    # Get camera selection from config
+    selected_cameras = dataset_cfg.get("cameras", None)
+    if selected_cameras is not None:
+        if is_main_process():
+            logger.info(f"Using selected cameras: {selected_cameras}")
+    else:
+        if is_main_process():
+            logger.info("Using all available cameras")
+
     # Create train dataset
     train_dataset = create_hdf5_lerobot_dataset(
         hdf5_paths=train_files,
@@ -257,9 +277,10 @@ def create_dataset_from_config(config: Dict, val_split: bool = False) -> Tuple[t
         use_ee_pose=dataset_cfg.get("use_ee_pose", True),
         use_sensor=dataset_cfg.get("use_sensor", False),
         use_ee_pose_delta_as_action=dataset_cfg.get("use_ee_pose_delta_as_action", False),
-        task_instruction=dataset_cfg.get("task_instruction", "Move the needle to the eye phantom and insert it through the trocar opening"),
-        task_instruction1=dataset_cfg.get("task_instruction1", "Move the needle to the eye phantom"),
-        task_instruction2=dataset_cfg.get("task_instruction2", "insert the needle through the eye phantom trocar opening"),
+        task_instruction=task_instruction,
+        task_instruction1=task_instruction1,
+        task_instruction2=task_instruction2,
+        cameras=selected_cameras,
         tokenizer=tokenizer,
         tokenizer_max_length=tokenizer_max_length,
         # NO augmentation for sim data - DR was already applied during collection
@@ -286,9 +307,10 @@ def create_dataset_from_config(config: Dict, val_split: bool = False) -> Tuple[t
             use_ee_pose=dataset_cfg.get("use_ee_pose", True),
             use_sensor=dataset_cfg.get("use_sensor", False),
             use_ee_pose_delta_as_action=dataset_cfg.get("use_ee_pose_delta_as_action", False),
-            task_instruction=dataset_cfg.get("task_instruction", "Insert needle into eye trocar in simulation."),
-            task_instruction1=dataset_cfg.get("task_instruction1", "Move the needle to the eye phantom"),
-            task_instruction2=dataset_cfg.get("task_instruction2", "insert the needle through the eye phantom trocar opening"),
+            task_instruction=task_instruction,
+            task_instruction1=task_instruction1,
+            task_instruction2=task_instruction2,
+            cameras=selected_cameras,
             tokenizer=tokenizer,
             tokenizer_max_length=tokenizer_max_length,
             augment=False,
@@ -332,12 +354,27 @@ def create_policy_from_config(config: Dict, device: torch.device) -> SmolVLAPoli
     if use_ee_pose: state_dim += 6
     if use_qpos: state_dim += 6
     if use_sensor: state_dim += 1
-    
+
     # Fallback default if nothing selected
     if state_dim == 0: state_dim = 6
 
+    # Get selected cameras from config
+    selected_cameras = dataset_cfg.get("cameras", None)
+    if selected_cameras is None:
+        # Default: use all 3 cameras
+        selected_cameras = ["camera1", "camera2", "camera3"]
+
     if is_main_process():
         logger.info(f"State dimension: {state_dim} (use_ee_pose={use_ee_pose}, use_qpos={use_qpos}, use_sensor={use_sensor})")
+        logger.info(f"Selected cameras for policy: {selected_cameras}")
+
+    # Build input_features based on selected cameras
+    input_features = {}
+    for cam in selected_cameras:
+        input_features[f"observation.images.{cam}"] = PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512))
+
+    # Add state feature
+    input_features["observation.state"] = PolicyFeature(type=FeatureType.STATE, shape=(state_dim,))
 
     # Create SmolVLAConfig
     smolvla_config = SmolVLAConfig(
@@ -353,12 +390,7 @@ def create_policy_from_config(config: Dict, device: torch.device) -> SmolVLAPoli
         train_state_proj=policy_cfg.get("train_state_proj", True),
         tokenizer_max_length=policy_cfg.get("tokenizer_max_length", 48),
         resize_imgs_with_padding=tuple(policy_cfg.get("resize_imgs_with_padding", [512, 512])),
-        input_features={
-            "observation.images.camera1": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512)),
-            "observation.images.camera2": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512)),
-            "observation.images.camera3": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 512, 512)),
-            "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(state_dim,)),
-        },
+        input_features=input_features,
         output_features={
             "action": PolicyFeature(type=FeatureType.ACTION, shape=(6,)),
         },

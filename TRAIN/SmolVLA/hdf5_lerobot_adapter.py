@@ -77,6 +77,7 @@ class HDF5LeRobotDataset(Dataset):
         task_instruction: str = "Insert the needle into the target point",
         task_instruction1: str = "Move the needle to the eye phantom",
         task_instruction2: str = "insert the needle through the eye phantom trocar opening",
+        cameras: Optional[List[str]] = None,
         camera_dropout_prob: float = 0.0,
         min_cameras: int = 1,
         augment: bool = True,
@@ -100,6 +101,7 @@ class HDF5LeRobotDataset(Dataset):
             use_ee_pose: Use end-effector pose for state (6 dims, default)
             use_ee_pose_delta_as_action: Calculate action from ee_pose delta
             task_instruction: Task instruction text
+            cameras: List of camera names to use (e.g., ["camera1", "camera3"]). None = use all cameras
             camera_dropout_prob: Probability of dropping out cameras (0.0 = disabled)
             min_cameras: Minimum number of cameras to keep active
             augment: Enable image augmentation
@@ -175,16 +177,35 @@ class HDF5LeRobotDataset(Dataset):
             self.task2_tokens = self.task2_mask = None
 
         # Get actual camera names from HDF5 file
-        self.actual_camera_names = sorted(list(self.h5file['observations']['images'].keys()))
-        self.num_cameras = len(self.actual_camera_names)
+        all_actual_camera_names = sorted(list(self.h5file['observations']['images'].keys()))
 
-        # Create mapping from camera index to actual camera name
+        # Create full mapping from camera index to actual camera name
         # Expected: camera1, camera2, camera3
         # Actual (sim): side_camera, tool_camera, top_camera
-        self.camera_name_mapping = {}
-        for cam_idx, actual_name in enumerate(self.actual_camera_names, start=1):
+        full_camera_mapping = {}
+        for cam_idx, actual_name in enumerate(all_actual_camera_names, start=1):
             expected_name = f"camera{cam_idx}"
-            self.camera_name_mapping[expected_name] = actual_name
+            full_camera_mapping[expected_name] = actual_name
+
+        # Filter cameras based on selection
+        if cameras is None:
+            # Use all cameras
+            self.selected_cameras = [f"camera{i}" for i in range(1, len(all_actual_camera_names) + 1)]
+        else:
+            # Validate and use selected cameras
+            self.selected_cameras = []
+            for cam in cameras:
+                if cam in full_camera_mapping:
+                    self.selected_cameras.append(cam)
+                else:
+                    logger.warning(f"Camera '{cam}' not found in HDF5 file. Available: {list(full_camera_mapping.keys())}")
+
+            if len(self.selected_cameras) == 0:
+                raise ValueError(f"No valid cameras selected! Available cameras: {list(full_camera_mapping.keys())}")
+
+        # Create mapping for selected cameras only
+        self.camera_name_mapping = {cam: full_camera_mapping[cam] for cam in self.selected_cameras}
+        self.num_cameras = len(self.selected_cameras)
 
         # Determine state dimension
         self.state_dim = 0
@@ -212,7 +233,8 @@ class HDF5LeRobotDataset(Dataset):
         # Reduce logging verbosity - only log summary
         if episode_index == 0:
             logger.info(f"Loading HDF5 episodes from {self.hdf5_path.parent}")
-            logger.info(f"  Cameras: {self.num_cameras} | State: {self.state_dim}D | Format: {'JPEG' if self.is_jpeg_format else 'GZIP'}")
+            logger.info(f"  Selected cameras: {self.selected_cameras} (Total: {self.num_cameras})")
+            logger.info(f"  State: {self.state_dim}D | Format: {'JPEG' if self.is_jpeg_format else 'GZIP'}")
             logger.info(f"  Camera mapping: {self.camera_name_mapping}")
             logger.info(f"  Phase info available: {self.has_phase}")
             if self.use_ee_pose_delta_as_action:
@@ -389,20 +411,19 @@ class HDF5LeRobotDataset(Dataset):
         }
 
         # Determine which cameras to dropout (same for all temporal steps)
-        active_cameras = list(range(1, self.num_cameras + 1))
+        active_cameras = self.selected_cameras.copy()
         if self.camera_dropout_prob > 0 and random.random() < self.camera_dropout_prob:
             # Calculate how many cameras to keep active
-            num_to_keep = max(self.min_cameras, random.randint(self.min_cameras, self.num_cameras))
-            if num_to_keep < self.num_cameras:
-                active_cameras = random.sample(active_cameras, num_to_keep)
+            num_to_keep = max(self.min_cameras, random.randint(self.min_cameras, len(self.selected_cameras)))
+            if num_to_keep < len(self.selected_cameras):
+                active_cameras = random.sample(self.selected_cameras, num_to_keep)
 
         # Process images: Load temporal observations and stack to (n_obs_steps, C, H, W)
-        for cam_idx in range(1, self.num_cameras + 1):
-            cam_key = f"camera{cam_idx}"
-            actual_cam_name = self.camera_name_mapping.get(cam_key, cam_key)
+        for cam_key in self.selected_cameras:
+            actual_cam_name = self.camera_name_mapping[cam_key]
             try:
                 # Check if this camera should be dropped out
-                if cam_idx not in active_cameras:
+                if cam_key not in active_cameras:
                     # Camera dropout: use black image (original size, float32 [0,1], C,H,W format)
                     # Get original image size from first frame
                     first_frame = self.h5file['observations']['images'][actual_cam_name][0]
@@ -707,6 +728,7 @@ def create_hdf5_lerobot_dataset(
     task_instruction: str = "Move the needle to the eye phantom and insert it through the trocar opening",
     task_instruction1: str = "Move the needle to the eye phantom",
     task_instruction2: str = "insert the needle through the eye phantom trocar opening",
+    cameras: Optional[List[str]] = None,
     camera_dropout_prob: float = 0.0,
     min_cameras: int = 1,
     augment: bool = True,
@@ -731,6 +753,7 @@ def create_hdf5_lerobot_dataset(
         use_ee_pose: Use end-effector pose for state (default)
         use_ee_pose_delta_as_action: Calculate action from ee_pose delta
         task_instruction: Task instruction text
+        cameras: List of camera names to use (e.g., ["camera1", "camera3"]). None = use all cameras
         camera_dropout_prob: Probability of dropping out cameras
         min_cameras: Minimum number of cameras to keep active
         augment: Enable image augmentation
@@ -771,6 +794,7 @@ def create_hdf5_lerobot_dataset(
                 task_instruction=task_instruction,
                 task_instruction1=task_instruction1,
                 task_instruction2=task_instruction2,
+                cameras=cameras,
                 camera_dropout_prob=camera_dropout_prob,
                 min_cameras=min_cameras,
                 augment=augment,

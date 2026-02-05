@@ -30,10 +30,10 @@ from transformers import AutoTokenizer
 # === Configuration ===
 CONFIG_PATH = os.path.join(SMOLVLA_DIR, "train_config_smolvla_sim.yaml")
 STATS_PATH = os.path.join(SMOLVLA_DIR, "dataset_stats.yaml")
-CHECKPOINT_PATH = "/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_10000.pt"
+CHECKPOINT_PATH = "/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla_all/checkpoints/checkpoint_step_10000.pt"
 MODEL_XML = os.path.join(SCRIPT_DIR, "meca_add.xml")
 OUTPUT_PATH = os.path.join(SCRIPT_DIR, "collected_data_sim_clean/smolvla_inference_rollout.h5")
-MAX_STEPS = 500
+MAX_STEPS = 1500
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_config(path):
@@ -235,7 +235,7 @@ def main():
     print(f"🎬 Starting SmolVLA Rollout for {MAX_STEPS} steps...")
     mujoco.mj_resetData(model, data)
     data.qpos[:6] = home_pose
-    randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
+    # randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
     mujoco.mj_forward(model, data)
 
     for t in tqdm(range(MAX_STEPS), desc="Rollout"):
