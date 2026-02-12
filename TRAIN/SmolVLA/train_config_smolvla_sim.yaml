@@ -47,7 +47,7 @@ dataset:
 
   # Task instruction for simulation (unified - no phase-specific instructions)
   task_instruction: "Locate the silver mounting plate placed on the black optical table. Inside the yellow cylindrical jig fixed on that plate, find the grey sphere. Align the needle with the center hole of that grey sphere and insert it precisely."
-
+  # Insert the probe into the cylindrical part
   # Optional: If you want phase-specific instructions, uncomment these:
   # task_instruction1: "Move the needle to the eye phantom"  # Phase 1 (Align)
   # task_instruction2: "insert the needle through the eye phantom trocar opening"  # Phase 2 (Insert)
