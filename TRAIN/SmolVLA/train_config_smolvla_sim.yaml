@@ -29,7 +29,7 @@ normalization:
 dataset:
   # Root directory containing simulation HDF5 episode files
   # Should point to Eye_trocar_sim folder with all sim subfolders
-  root_dir: "/home/najo/NAS/VLA/Insertion_VLA_Sim2/Dataset/Insert_never_random"
+  root_dir: "/data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5"
 
   # Action prediction horizon (SmolVLA paper: n=50)
   horizon: 50

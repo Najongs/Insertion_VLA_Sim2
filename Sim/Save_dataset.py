@@ -186,7 +186,7 @@ def main():
     recorder = SimRecorder(SAVE_DIR)
     # home_pose = np.array([0.5236, -0.3491, 0.3491, 0.0000, 0.5236, 1.0472]) # (30, -20, 20, 0, 30, 60)
     home_pose = np.array([np.random.uniform(-0.45, 0.55) , np.random.uniform(-0.3, -0.4), np.random.uniform(0.3, 0.4),  0.0000,np.random.uniform(0.45, 0.55), np.random.uniform(0.95, 1.05)]) # (30, -20, 20, 0, 30, 60)
-    current_speed = 0.5
+    current_speed = np.random.uniform(0.4, 0.6)
 
     def get_ee_pose_6d_scaled():
         """Get 6_link world pose (x, y, z, rx, ry, rz)."""
