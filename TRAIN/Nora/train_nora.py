@@ -99,7 +99,7 @@ class NoraTrainingConfig:
 
         # Training parameters
         self.per_device_batch_size = config_dict.get('per_device_batch_size', 8)
-        self.learning_rate = config_dict.get('learning_rate', 5e-5)
+        self.learning_rate = float(config_dict.get('learning_rate', 5e-5))
         self.gradient_accumulation_steps = config_dict.get('gradient_accumulation_steps', 2)
         self.num_warmup_steps = config_dict.get('num_warmup_steps', 1000)
         self.max_train_steps = config_dict.get('max_train_steps', 100000)
@@ -419,7 +419,7 @@ def load_model_and_processor(config: NoraTrainingConfig, accelerator: Accelerato
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         'declare-lab/nora',
         torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2"  # Use PyTorch's SDPA instead of flash_attention_2 (GLIBC compatibility)
+        attn_implementation="flash_attention_2"  # Use PyTorch's SDPA (flash_attention_2 not available)
     )
 
     # Freeze Qwen VLM (vision encoder + language model), only train action decoder (lm_head)
@@ -586,9 +586,43 @@ def train(config: NoraTrainingConfig):
         )
 
     # Resume from checkpoint if provided
+    start_step = 0
     if config.resume_from_checkpoint:
-        accelerator.load_state(config.resume_from_checkpoint)
-        accelerator.print(f"Resumed from checkpoint: {config.resume_from_checkpoint}")
+        ckpt_path = config.resume_from_checkpoint
+        if os.path.isdir(ckpt_path):
+            # Accelerate save_state directory format
+            accelerator.load_state(ckpt_path)
+            # Extract step number from directory name (e.g. steps_2000)
+            dir_name = os.path.basename(ckpt_path.rstrip("/"))
+            if "steps_" in dir_name:
+                start_step = int(dir_name.split("_")[-1])
+            accelerator.print(f"Resumed from accelerate checkpoint: {ckpt_path} (step {start_step})")
+        else:
+            # .pt file format
+            checkpoint = torch.load(ckpt_path, map_location="cpu")
+            unwrapped_model = accelerator.unwrap_model(model)
+            # Support both old (model_state_dict=full) and new (trainable_state_dict=lm_head only)
+            if "trainable_state_dict" in checkpoint:
+                state_dict = checkpoint["trainable_state_dict"]
+            elif "model_state_dict" in checkpoint:
+                state_dict = {k: v for k, v in checkpoint["model_state_dict"].items() if "lm_head" in k}
+                accelerator.print(f"  Old checkpoint format detected, extracted {len(state_dict)} lm_head keys")
+            else:
+                raise ValueError(f"Checkpoint has no 'trainable_state_dict' or 'model_state_dict'. Keys: {list(checkpoint.keys())}")
+            missing, unexpected = unwrapped_model.load_state_dict(state_dict, strict=False)
+            accelerator.print(f"Loaded trainable params: {len(state_dict)} keys, missing={len(missing)}, unexpected={len(unexpected)}")
+            del state_dict
+            if "optimizer_state_dict" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                accelerator.print("Restored optimizer state")
+            if "scheduler_state_dict" in checkpoint:
+                lr_scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                accelerator.print("Restored scheduler state")
+            start_step = checkpoint.get("step", 0)
+            del checkpoint
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            accelerator.print(f"Resumed from .pt checkpoint: {ckpt_path} (step {start_step})")
 
     # Training info
     total_batch_size = config.per_device_batch_size * accelerator.num_processes * config.gradient_accumulation_steps
@@ -604,9 +638,10 @@ def train(config: NoraTrainingConfig):
     logger.info(f"  Total optimization steps = {config.max_train_steps}")
 
     # Training loop
-    completed_steps = 0
+    completed_steps = start_step
     progress_bar = tqdm(
         range(config.max_train_steps),
+        initial=start_step,
         disable=not accelerator.is_local_main_process,
         desc="Training",
         dynamic_ncols=True
@@ -697,22 +732,27 @@ def train(config: NoraTrainingConfig):
                         # Ensure all processes are ready before checkpointing
                         accelerator.wait_for_everyone()
 
-                        # 1. Save standard Accelerate state (for resuming)
-                        checkpoint_dir = os.path.join(config.output_dir, f"steps_{completed_steps}")
-                        accelerator.save_state(checkpoint_dir)
-
-                        # 2. Save PyTorch checkpoint (single file, lightweight) - inspired by train_smolvla_sim.py
+                        # Save .pt checkpoint (trainable params + optimizer to avoid RAM spike)
                         if accelerator.is_main_process:
                             checkpoint_path = os.path.join(config.output_dir, f"checkpoint_step_{completed_steps}.pt")
                             unwrapped_model = accelerator.unwrap_model(model)
 
+                            # Only save trainable parameters (lm_head) to avoid RAM spike
+                            trainable_state_dict = {
+                                name: param.data.cpu()
+                                for name, param in unwrapped_model.named_parameters()
+                                if param.requires_grad
+                            }
+
                             torch.save({
                                 "step": completed_steps,
-                                "model_state_dict": unwrapped_model.state_dict(),
+                                "trainable_state_dict": trainable_state_dict,
                                 "optimizer_state_dict": optimizer.state_dict(),
                                 "scheduler_state_dict": lr_scheduler.state_dict(),
                                 "config": vars(config),
                             }, checkpoint_path)
+
+                            del trainable_state_dict
 
                         if accelerator.is_main_process:
                             avg_loss = total_loss / config.checkpoint_save_frequency
@@ -745,12 +785,25 @@ def train(config: NoraTrainingConfig):
             if completed_steps >= config.max_train_steps:
                 break
 
-    # Save final checkpoint
-    final_checkpoint_dir = os.path.join(config.output_dir, f"steps_{completed_steps}")
-    accelerator.save_state(final_checkpoint_dir)
-
+    # Save final checkpoint (.pt)
+    accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        logger.info(f"Training finished. Final checkpoint saved at {final_checkpoint_dir}")
+        final_checkpoint_path = os.path.join(config.output_dir, f"checkpoint_step_{completed_steps}.pt")
+        unwrapped_model = accelerator.unwrap_model(model)
+        trainable_state_dict = {
+            name: param.data.cpu()
+            for name, param in unwrapped_model.named_parameters()
+            if param.requires_grad
+        }
+        torch.save({
+            "step": completed_steps,
+            "trainable_state_dict": trainable_state_dict,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": lr_scheduler.state_dict(),
+            "config": vars(config),
+        }, final_checkpoint_path)
+        del trainable_state_dict
+        logger.info(f"Training finished. Final checkpoint saved at {final_checkpoint_path}")
         wandb.finish()
 
 

@@ -1278,7 +1278,7 @@ def main():
         all_hdf5_files = None
 
     # Create train dataloader with distributed sampler
-    train_sampler = DistributedSampler(train_dataset, shuffle=False) if is_distributed else None
+    train_sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
 
     num_workers = config["training"].get("num_workers", 0)
 

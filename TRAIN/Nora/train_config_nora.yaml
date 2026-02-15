@@ -1,0 +1,55 @@
+# NORA VLA Training Configuration
+# Dataset: /data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5
+# GPUs: 3x RTX 3090 (24GB each)
+# Model: declare-lab/nora (Qwen2.5-VL based, ~8B params)
+# Training: Only lm_head (action decoder) is trainable
+
+# Training parameters
+per_device_batch_size: 2
+learning_rate: 5e-5
+gradient_accumulation_steps: 4
+num_warmup_steps: 500
+max_train_steps: 10000
+gradient_clipping: 1.0
+
+# Paths
+output_dir: /data/public/NAS/Insertion_VLA_Sim2/outputs/nora
+resume_from_checkpoint: '/data/public/NAS/Insertion_VLA_Sim2/outputs/nora/steps_2000'
+load_model_weights: null
+
+# Dataset configuration
+dataset:
+  root_dir: /data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5
+  horizon: 10
+  use_qpos: false
+  use_ee_pose: true
+  use_ee_pose_delta_as_action: false
+  task_instruction: "Insert the needle into the round sphere point"
+  camera_dropout_prob: 0.0
+  min_cameras: 1
+  resize_resolution: [224, 224]
+
+  # Normalization (set path if stats file exists, otherwise null)
+  normalization_stats_path: null
+
+  # Data augmentation
+  augment: False
+  augment_brightness: 0.2
+  augment_contrast: 0.2
+  augment_saturation: 0.2
+  augment_hue: 0.05
+  augment_noise: 0.02
+
+  # Validation
+  num_val_episodes: 100
+
+# Validation frequency
+val_frequency: 500
+
+# Logging and checkpointing
+wandb_project_name: "NORA-VLA-Insertion-Sim2"
+checkpoint_save_frequency: 1000
+logging_frequency: 50
+
+# DataLoader
+num_workers: 0
