@@ -8,11 +8,11 @@
 set -e  # Exit on error
 
 # Configuration
-CHECKPOINT="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_7000.pt"
-CONFIG="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/train_config_smolvla_sim.yaml"
-STATS="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml"
-EPISODE="/home/najo/NAS/VLA/Insertion_VLA_Sim2/Dataset/Insert_never_random/collected_data_merged/worker0_episode_20260204_100003.h5"
-OUTPUT_BASE="/home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/outputs/full_workflow_$(date +%y%m%d_%H%M%S)"
+CHECKPOINT="/data/public/NAS/Insertion_VLA_Sim2/outputs/nora/checkpoint_step_5000.pt"
+CONFIG="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/Nora/train_config_nora.yaml"
+STATS="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml"
+EPISODE="/data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5/episode_20260213_213912.h5"
+OUTPUT_BASE="outputs/full_workflow_$(date +%y%m%d_%H%M%S)"
 DEVICE="cuda"
 
 # Create output directory
@@ -31,7 +31,7 @@ echo ""
 echo "======================================================================"
 echo "Step 1/4: Evaluating model on episode..."
 echo "======================================================================"
-python3 /home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/evaluate_episode_normalized.py \
+python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/evaluate_episode_normalized.py \
     --checkpoint "${CHECKPOINT}" \
     --config "${CONFIG}" \
     --stats "${STATS}" \
@@ -53,7 +53,7 @@ echo ""
 echo "======================================================================"
 echo "Step 2/4: Reproducing Ground Truth trajectory..."
 echo "======================================================================"
-python3 /home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/reproduce_from_csv.py \
+python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/reproduce_from_csv.py \
     --csv "${CSV_FILE}" \
     --mode gt \
     --output "${OUTPUT_BASE}/reproduced_gt.h5"
@@ -70,7 +70,7 @@ echo ""
 echo "======================================================================"
 echo "Step 3/4: Reproducing Predicted trajectory..."
 echo "======================================================================"
-python3 /home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/reproduce_from_csv.py \
+python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/reproduce_from_csv.py \
     --csv "${CSV_FILE}" \
     --mode pred \
     --output "${OUTPUT_BASE}/reproduced_pred.h5"
@@ -87,7 +87,7 @@ echo ""
 echo "======================================================================"
 echo "Step 4/4: Comparing GT vs Predicted trajectories..."
 echo "======================================================================"
-python3 /home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/compare_reproductions.py \
+python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/compare_reproductions.py \
     --gt "${OUTPUT_BASE}/reproduced_gt.h5" \
     --pred "${OUTPUT_BASE}/reproduced_pred.h5" \
     --output "${OUTPUT_BASE}/trajectory_comparison.png"

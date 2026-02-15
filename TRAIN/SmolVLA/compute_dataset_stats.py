@@ -7,9 +7,9 @@ for use in normalized training and evaluation.
 
 Usage:
 python compute_dataset_stats.py \
-    --dataset_root /home/najo/NAS/VLA/Insertion_VLA_Sim2/Dataset \
+    --dataset_root /data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5 \
     --output dataset_stats.yaml \
-    --max_episodes 5000
+    --max_episodes 50000
 """
 
 import argparse

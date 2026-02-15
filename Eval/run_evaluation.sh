@@ -1,13 +1,13 @@
 #!/bin/bash
-# SmolVLA Evaluation Script
-# Evaluates a trained model on a single episode from the training dataset
+# NORA Evaluation Script
+# Evaluates a trained NORA model on a single episode from the training dataset
 
 # Configuration
-CHECKPOINT="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla/checkpoints/checkpoint_step_1000.pt"
-CONFIG="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/train_config_smolvla_sim.yaml"
-STATS="/home/najo/NAS/VLA/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml"
-EPISODE=/home/najo/NAS/VLA/Insertion_VLA_Sim2/Dataset/Insert_never_random/collected_data_merged/worker0_episode_20260204_100003.h5
-OUTPUT_DIR="/home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/outputs/evaluation_$(date +%y%m%d_%H%M%S)"
+CHECKPOINT="/data/public/NAS/Insertion_VLA_Sim2/outputs/nora/checkpoint_step_5000.pt"
+CONFIG="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/Nora/train_config_nora.yaml"
+STATS="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml"
+EPISODE="/data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5/episode_20260213_213912.h5"
+OUTPUT_DIR="/data/public/NAS/Insertion_VLA_Sim2/Eval/outputs/nora_evaluation_$(date +%y%m%d_%H%M%S)"
 DEVICE="cuda"
 
 # Check if files exist
@@ -22,8 +22,8 @@ done
 echo "✅ All files found!"
 echo ""
 
-# Run evaluation
-python3 /home/najo/NAS/VLA/Insertion_VLA_Sim2/Eval/evaluate_episode_normalized.py \
+# Run NORA evaluation
+python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/evaluate_episode_nora.py \
     --checkpoint "${CHECKPOINT}" \
     --config "${CONFIG}" \
     --stats "${STATS}" \

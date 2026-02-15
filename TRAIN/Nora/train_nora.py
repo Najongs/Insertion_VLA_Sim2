@@ -305,9 +305,12 @@ def process_example_for_nora(example: Dict[str, Any], processor: AutoProcessor, 
         Processed messages in NORA format
     """
     # Get action and tokenize with FAST
+    # For horizon=1: action shape is (action_dim,) -> reshape to (1, action_dim)
+    # For horizon>1: action shape is (horizon, action_dim) -> use first step only
     action = example['action'].numpy()
-    if len(action.shape) == 1:
-        action = action[np.newaxis, :]  # (action_dim,) -> (1, action_dim)
+    if len(action.shape) == 2:
+        action = action[0]  # (horizon, action_dim) -> (action_dim,) use first step
+    action = action[np.newaxis, :]  # (action_dim,) -> (1, action_dim)
 
     # Tokenize action with FAST
     fast_tokens = fast_tokenizer(action)

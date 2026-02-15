@@ -20,7 +20,7 @@ load_model_weights: null
 # Dataset configuration
 dataset:
   root_dir: /data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5
-  horizon: 10
+  horizon: 1
   use_qpos: false
   use_ee_pose: true
   use_ee_pose_delta_as_action: false
@@ -29,8 +29,8 @@ dataset:
   min_cameras: 1
   resize_resolution: [224, 224]
 
-  # Normalization (set path if stats file exists, otherwise null)
-  normalization_stats_path: null
+  # Normalization (Mean/Std normalization for action before FAST tokenizer)
+  normalization_stats_path: /data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml
 
   # Data augmentation
   augment: False
