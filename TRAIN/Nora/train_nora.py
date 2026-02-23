@@ -607,6 +607,13 @@ def train(config: NoraTrainingConfig):
             # Support both old (model_state_dict=full) and new (trainable_state_dict=lm_head only)
             if "trainable_state_dict" in checkpoint:
                 state_dict = checkpoint["trainable_state_dict"]
+                # Fix key name mismatch: Accelerate wraps model differently,
+                # causing keys like "model.language_model.*" vs "model.model.*"
+                fixed = {}
+                for k, v in state_dict.items():
+                    new_key = k.replace('model.language_model.', 'model.model.')
+                    fixed[new_key] = v
+                state_dict = fixed
             elif "model_state_dict" in checkpoint:
                 state_dict = {k: v for k, v in checkpoint["model_state_dict"].items() if "lm_head" in k}
                 accelerator.print(f"  Old checkpoint format detected, extracted {len(state_dict)} lm_head keys")

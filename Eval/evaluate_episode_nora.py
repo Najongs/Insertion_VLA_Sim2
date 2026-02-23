@@ -82,15 +82,27 @@ class NoraEvaluator:
         )
 
         # 3. Load checkpoint weights
+        self.ckpt_config = {}  # Store checkpoint's training config
         if checkpoint_path and os.path.exists(checkpoint_path):
             logger.info(f"Loading checkpoint: {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            self.ckpt_config = checkpoint.get("config", {})
 
             if "trainable_state_dict" in checkpoint:
                 # New format: only trainable params (lm_head / embed_tokens)
+                # Fix key name mismatch: Accelerate saves as "model.language_model.*"
+                # but Qwen2_5_VLForConditionalGeneration expects "model.model.*"
                 state_dict = checkpoint["trainable_state_dict"]
-                missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
-                logger.info(f"  Loaded trainable params: {len(state_dict)} keys, missing={len(missing)}, unexpected={len(unexpected)}")
+                fixed_state_dict = {}
+                for k, v in state_dict.items():
+                    new_key = k.replace('model.language_model.', 'model.model.')
+                    fixed_state_dict[new_key] = v
+                    if new_key != k:
+                        logger.info(f"  Key remapped: {k} -> {new_key}")
+                missing, unexpected = self.model.load_state_dict(fixed_state_dict, strict=False)
+                logger.info(f"  Loaded trainable params: {len(fixed_state_dict)} keys, missing={len(missing)}, unexpected={len(unexpected)}")
+                if unexpected:
+                    logger.warning(f"  Unexpected keys: {unexpected}")
             elif "model_state_dict" in checkpoint:
                 # Old format: full model
                 state_dict = checkpoint["model_state_dict"]
@@ -101,19 +113,26 @@ class NoraEvaluator:
                 logger.warning(f"  Unknown checkpoint format. Keys: {list(checkpoint.keys())}")
 
             logger.info(f"  Checkpoint step: {checkpoint.get('step', 'unknown')}")
+            del checkpoint
         else:
             logger.warning("No checkpoint found. Using base model weights.")
 
         self.model.to(device)
         self.model.eval()
 
-        # 4. Load normalization stats (only if training used normalization)
+        # 4. Load normalization stats
+        # Use checkpoint's embedded config to determine if training used normalization
+        # This avoids mismatch when config YAML was changed after training
         self.action_mean = None
         self.action_std = None
-        dataset_cfg = self.config.get("dataset", {})
-        train_norm_path = dataset_cfg.get("normalization_stats_path", None)
+        ckpt_norm_path = self.ckpt_config.get("normalization_stats_path", None)
 
-        if train_norm_path is not None:
+        # Fallback to YAML config if checkpoint doesn't have embedded config
+        if ckpt_norm_path is None and not self.ckpt_config:
+            dataset_cfg = self.config.get("dataset", {})
+            ckpt_norm_path = dataset_cfg.get("normalization_stats_path", None)
+
+        if ckpt_norm_path is not None:
             # Training used normalization → eval must unnormalize
             if os.path.exists(stats_path):
                 stats = load_config(stats_path)

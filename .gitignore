@@ -10,10 +10,12 @@ __pycache__/
 random_backgrounds/
 
 # 데이터셋 제외
+lerobot_dataset/
 *.h5
 *.hdf5
 *.tfrecord
 *.mp4
+all_h5/
 
 # 모델 또는 출력결과물
 output/

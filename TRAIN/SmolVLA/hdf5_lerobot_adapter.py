@@ -148,11 +148,22 @@ class HDF5LeRobotDataset(Dataset):
         self.augment_hue = augment_hue
         self.augment_noise = augment_noise
 
-        # Load HDF5 file
-        self.h5file = h5py.File(str(self.hdf5_path), 'r')
+        # Lazy HDF5 loading: open temporarily to read metadata, then close
+        # With 30k+ episodes, keeping all files open causes RAM OOM
+        self.h5file = None  # Will be opened on-demand in __getitem__
 
-        # Get dataset shapes
-        self.num_frames = self.h5file['action'].shape[0]
+        with h5py.File(str(self.hdf5_path), 'r') as h5f:
+            # Get dataset shapes
+            self.num_frames = h5f['action'].shape[0]
+
+            # Get actual camera names from HDF5 file
+            all_actual_camera_names = sorted(list(h5f['observations']['images'].keys()))
+
+            # Detect image format
+            self.is_jpeg_format = self._detect_image_format_from(h5f, all_actual_camera_names)
+
+            # Check if phase information is available
+            self.has_phase = 'phase' in h5f
 
         # Tokenize task instructions
         if self.tokenizer is not None:
@@ -175,9 +186,6 @@ class HDF5LeRobotDataset(Dataset):
             self.default_tokens = self.default_mask = None
             self.task1_tokens = self.task1_mask = None
             self.task2_tokens = self.task2_mask = None
-
-        # Get actual camera names from HDF5 file
-        all_actual_camera_names = sorted(list(self.h5file['observations']['images'].keys()))
 
         # Create full mapping from camera index to actual camera name
         # Expected: camera1, camera2, camera3
@@ -216,12 +224,6 @@ class HDF5LeRobotDataset(Dataset):
         # Sensor is added AFTER normalization, but counts towards total dimension
         if use_sensor:
             self.state_dim += 1
-
-        # Detect image format (JPEG vs GZIP)
-        self.is_jpeg_format = self._detect_image_format()
-
-        # Check if phase information is available
-        self.has_phase = 'phase' in self.h5file
 
         # Phase mapping: numeric ID -> string label
         self.phase_mapping = {
@@ -283,6 +285,13 @@ class HDF5LeRobotDataset(Dataset):
             return phase_instructions.get(dominant_phase, self.default_task_instruction)
 
     def _detect_image_format(self) -> bool:
+        """Legacy method - opens file to detect format."""
+        with h5py.File(str(self.hdf5_path), 'r') as h5f:
+            cam_names = sorted(list(h5f['observations']['images'].keys()))
+            return self._detect_image_format_from(h5f, cam_names)
+
+    @staticmethod
+    def _detect_image_format_from(h5f, camera_names: list) -> bool:
         """
         Detect whether images are stored in JPEG (compressed) or GZIP (uncompressed) format.
 
@@ -291,8 +300,8 @@ class HDF5LeRobotDataset(Dataset):
         """
         try:
             # Get first camera dataset
-            images_grp = self.h5file['observations']['images']
-            first_cam = sorted(list(images_grp.keys()))[0]
+            images_grp = h5f['observations']['images']
+            first_cam = camera_names[0]
             first_dataset = images_grp[first_cam]
 
             # Read first frame to detect format
@@ -374,6 +383,21 @@ class HDF5LeRobotDataset(Dataset):
 
         return img_float
 
+    def _open_h5(self):
+        """Open HDF5 file lazily (on first access per call)."""
+        if self.h5file is None:
+            self.h5file = h5py.File(str(self.hdf5_path), 'r', rdcc_nbytes=1024*1024, rdcc_nslots=101)
+        return self.h5file
+
+    def _close_h5(self):
+        """Close HDF5 file to free memory."""
+        if self.h5file is not None:
+            try:
+                self.h5file.close()
+            except:
+                pass
+            self.h5file = None
+
     def __getitem__(self, idx: int) -> Dict:
         """
         Get a sample in LeRobot format with temporal observation stacking.
@@ -381,6 +405,8 @@ class HDF5LeRobotDataset(Dataset):
         Returns:
             Dictionary with LeRobot-compatible keys and values.
         """
+        # Open file on demand and close after reading
+        self._open_h5()
         # Calculate observation frame indices (temporal stacking)
         # For n_obs_steps=2: if idx=10, we get frames [9, 10]
         # For n_obs_steps=1: if idx=10, we get frame [10]
@@ -691,30 +717,32 @@ class HDF5LeRobotDataset(Dataset):
             lerobot_sample["observation.language.tokens"] = selected_tokens.clone()
             lerobot_sample["observation.language.attention_mask"] = selected_mask.clone()
 
+        # Close HDF5 file after reading to prevent memory accumulation
+        # with 30k+ episodes, keeping all files open exhausts system RAM
+        self._close_h5()
+
         return lerobot_sample
 
     def __getstate__(self):
         """Close HDF5 file before pickling for multiprocessing."""
         state = self.__dict__.copy()
-        # Close h5 file before sending to worker process
+        # h5file is opened lazily, ensure it's closed before pickling
         if 'h5file' in state and state['h5file'] is not None:
-            state['h5file'].close()
+            try:
+                state['h5file'].close()
+            except:
+                pass
             state['h5file'] = None
         return state
 
     def __setstate__(self, state):
-        """Reopen HDF5 file after unpickling in worker process."""
+        """Restore state after unpickling. HDF5 file will be opened lazily."""
         self.__dict__.update(state)
-        # Reopen HDF5 file in worker process
-        self.h5file = h5py.File(str(self.hdf5_path), 'r')
+        self.h5file = None  # Will be opened on-demand in __getitem__
 
     def __del__(self):
         """Close HDF5 file when dataset is destroyed."""
-        if hasattr(self, 'h5file') and self.h5file is not None:
-            try:
-                self.h5file.close()
-            except:
-                pass
+        self._close_h5()
 
 
 def create_hdf5_lerobot_dataset(

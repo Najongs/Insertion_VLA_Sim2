@@ -8,8 +8,8 @@
 set -e  # Exit on error
 
 # Configuration
-CHECKPOINT="/data/public/NAS/Insertion_VLA_Sim2/outputs/nora/checkpoint_step_5000.pt"
-CONFIG="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/Nora/train_config_nora.yaml"
+CHECKPOINT="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla_3cams/checkpoints/checkpoint_step_50000.pt"
+CONFIG="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/train_config_smolvla_sim.yaml"
 STATS="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml"
 EPISODE="/data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5/episode_20260213_213912.h5"
 OUTPUT_BASE="outputs/full_workflow_$(date +%y%m%d_%H%M%S)"

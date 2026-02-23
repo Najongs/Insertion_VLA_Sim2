@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 
-python visualize_all_trajectories_3d.py --dataset_path "/home/najo/NAS/VLA/Insertion_VLA_Sim2/Dataset/Insert_time_diff"
+python visualize_all_trajectories_3d.py --dataset_path "/data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5"
 
 Visualize all trajectories from Eye_trocar dataset in 3D space
 Shows all trajectories with their start and end points marked

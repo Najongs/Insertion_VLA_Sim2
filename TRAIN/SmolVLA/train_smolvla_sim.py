@@ -605,6 +605,10 @@ def evaluate_validation(
     for k, v in total_metrics.items():
         results[f"val/{k}"] = v / avg_divisor
 
+    # Free validation memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return results
 
 def update_policy(
@@ -866,8 +870,13 @@ def train(
     def get_dataloader_iterator():
         """Create a fresh dataloader iterator to prevent memory buildup."""
         while True:
+            if hasattr(dataloader, 'sampler') and hasattr(dataloader.sampler, 'set_epoch'):
+                get_dataloader_iterator.epoch = getattr(get_dataloader_iterator, 'epoch', 0) + 1
+                dataloader.sampler.set_epoch(get_dataloader_iterator.epoch)
             for batch in dataloader:
                 yield batch
+            # Explicit cleanup between epochs
+            gc.collect()
 
     dl_iter = get_dataloader_iterator()
 
@@ -998,7 +1007,7 @@ def train(
                         })
 
         # Memory cleanup
-        del batch
+        del batch, batch_episode_indices, batch_frame_indices, batch_timestamps
         if (step + 1) % 50 == 0:
             torch.cuda.empty_cache()
             gc.collect()
@@ -1047,7 +1056,8 @@ def train(
                 f"GradNorm: {avg_grad_norm:.3f} | "
                 f"LR: {lr:.2e} | "
                 f"{steps_per_sec:.2f} steps/sec | "
-                f"VRAM: {cuda_mem_allocated:.1f}GB"
+                f"VRAM: {cuda_mem_allocated:.1f}GB | "
+                f"RAM: {ram_gb:.1f}GB ({ram_percent:.1f}%)"
             )
 
             pbar.write(log_msg)
@@ -1078,6 +1088,10 @@ def train(
 
         # Validation
         if val_dataloader is not None and (step + 1) % val_freq == 0:
+            # Free training memory before validation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             if is_main_process():
                 logger.info(f"Running validation at step {step + 1}...")
 
