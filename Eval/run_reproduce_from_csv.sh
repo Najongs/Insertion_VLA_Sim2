@@ -2,7 +2,7 @@
 # Reproduce trajectory from CSV evaluation results in MuJoCo simulation
 
 # Configuration
-CSV_FILE="/data/public/NAS/Insertion_VLA_Sim2/Eval/outputs/nora_evaluation_260215_150331/frame_by_frame_comparison.csv"
+CSV_FILE="/data/public/NAS/Insertion_VLA_Sim2/Eval/outputs/full_workflow_260309_170516/evaluation/frame_by_frame_comparison.csv"
 MODE="pred"  # Options: "pred" (predicted) or "gt" (ground truth)
 OUTPUT_DIR="/data/public/NAS/Insertion_VLA_Sim2/Eval/outputs/reproduction_$(date +%y%m%d_%H%M%S)"
 

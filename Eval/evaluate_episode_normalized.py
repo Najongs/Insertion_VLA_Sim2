@@ -96,14 +96,26 @@ class SmolVLAEvaluator:
         # 3. Load Checkpoint
         if checkpoint_path and os.path.exists(checkpoint_path):
             logger.info(f"📂 Loading checkpoint: {checkpoint_path}")
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-            state_dict = checkpoint.get('policy_state_dict', checkpoint.get('model_state_dict', checkpoint))
-            # Remove module. prefix if present
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-            self.policy.load_state_dict(state_dict)
-            logger.info(f"  Checkpoint step: {checkpoint.get('step', 'unknown')}")
+            if os.path.isdir(checkpoint_path) and os.path.exists(os.path.join(checkpoint_path, "model.safetensors")):
+                from safetensors.torch import load_file
+                state_dict = load_file(os.path.join(checkpoint_path, "model.safetensors"))
+                self.policy.load_state_dict(state_dict)
+                logger.info("  Loaded weights from model.safetensors")
+            elif checkpoint_path.endswith('.safetensors'):
+                from safetensors.torch import load_file
+                state_dict = load_file(checkpoint_path)
+                self.policy.load_state_dict(state_dict)
+                logger.info("  Loaded weights from safetensors")
+            else:
+                checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+                state_dict = checkpoint.get('policy_state_dict', checkpoint.get('model_state_dict', checkpoint))
+                # Remove module. prefix if present
+                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                self.policy.load_state_dict(state_dict)
+                logger.info(f"  Checkpoint step: {checkpoint.get('step', 'unknown')}")
         else:
             logger.warning("⚠️ No checkpoint found. Using UNTRAINED model.")
+
 
         self.policy.to(device)
         self.policy.eval()

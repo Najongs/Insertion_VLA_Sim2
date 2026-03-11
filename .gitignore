@@ -8,7 +8,8 @@ __pycache__/
 
 # 다수 이미지 데이터 생략을 위해 랜덤 배경은 제외
 random_backgrounds/
-
+lerobot_multi_datasets/
+lerobot_real_dataset/
 # 데이터셋 제외
 lerobot_dataset/
 *.h5
@@ -16,7 +17,7 @@ lerobot_dataset/
 *.tfrecord
 *.mp4
 all_h5/
-
+dataset/
 # 모델 또는 출력결과물
 output/
 outputs/

@@ -8,10 +8,10 @@
 set -e  # Exit on error
 
 # Configuration
-CHECKPOINT="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla_3cams/checkpoints/checkpoint_step_50000.pt"
+CHECKPOINT="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla_lerobot_dataset/checkpoints/150000/pretrained_model"
 CONFIG="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/train_config_smolvla_sim.yaml"
 STATS="/data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/dataset_stats.yaml"
-EPISODE="/data/public/NAS/Insertion_VLA_Sim2/Dataset/all_h5/episode_20260213_213912.h5"
+EPISODE="/data/public/NAS/Insertion_VLA_Sim2/Dataset/dataset/New_dataset/collected_data/Eye_trocar/Eye_trocar/260119/episode_20260119_140516.h5"
 OUTPUT_BASE="outputs/full_workflow_$(date +%y%m%d_%H%M%S)"
 DEVICE="cuda"
 
@@ -31,10 +31,8 @@ echo ""
 echo "======================================================================"
 echo "Step 1/4: Evaluating model on episode..."
 echo "======================================================================"
-python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/evaluate_episode_normalized.py \
-    --checkpoint "${CHECKPOINT}" \
-    --config "${CONFIG}" \
-    --stats "${STATS}" \
+python3 /data/public/NAS/Insertion_VLA_Sim2/Eval/evaluate_episode_lerobot.py \
+    --pretrained_model "${CHECKPOINT}" \
     --episode "${EPISODE}" \
     --output_dir "${OUTPUT_BASE}/evaluation" \
     --device "${DEVICE}"

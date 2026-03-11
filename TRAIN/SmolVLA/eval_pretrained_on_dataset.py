@@ -8,7 +8,7 @@ and compares predicted actions against ground truth.
 
 Usage:
 python eval_pretrained_on_dataset.py \
-    --pretrained_path /data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla_lerobot_dataset/checkpoints/040000/pretrained_model \
+    --pretrained_path /data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/outputs/train/smolvla_lerobot_dataset/checkpoints/150000/pretrained_model \
     --dataset_path /data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA/lerobot_dataset/insertion_vla_sim2 \
     --episode_index 30299 \
     --device cuda \
