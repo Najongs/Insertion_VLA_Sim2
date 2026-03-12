@@ -37,14 +37,16 @@ class SimRecorder:
         self.out = pathlib.Path(output_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.buffer = []
+        self.episode_metadata = {}
         self.recording = False
         self.is_saving = False
         self.save_threads = []  # 저장 스레드 추적
 
-    def start(self):
+    def start(self, episode_metadata=None):
         # 이전 저장이 진행 중이어도 새 에피소드 시작 가능
         # (각 에피소드는 독립적인 버퍼 사용)
         self.buffer = []
+        self.episode_metadata = dict(episode_metadata or {})
         self.recording = True
 
     def add(self, frames, qpos, ee_pose, action, timestamp, phase, sensor_dist):
@@ -62,15 +64,17 @@ class SimRecorder:
     def save_async(self):
         if not self.buffer: return
         data_snapshot = self.buffer
+        metadata_snapshot = dict(self.episode_metadata)
         self.buffer = []
         self.recording = False
         self.is_saving = True
 
-        def worker(data, filename):
+        def worker(data, metadata, filename):
             try:
                 with h5py.File(filename, 'w') as f:
                     obs = f.create_group("observations")
                     img_grp = obs.create_group("images")
+                    meta_grp = f.create_group("metadata")
 
                     q_data = np.array([x['q'] for x in data], dtype=np.float32)
                     p_data = np.array([x['p'] for x in data], dtype=np.float32)
@@ -85,6 +89,13 @@ class SimRecorder:
                     f.create_dataset("action", data=act_data, compression="gzip")
                     f.create_dataset("timestamp", data=ts_data, compression="gzip")
                     f.create_dataset("phase", data=phase_data, compression="gzip")
+
+                    for key, value in metadata.items():
+                        value_arr = np.asarray(value)
+                        if value_arr.shape == ():
+                            meta_grp.create_dataset(key, data=value_arr)
+                        else:
+                            meta_grp.create_dataset(key, data=value_arr, compression="gzip")
 
                     first_imgs = data[0]["imgs"]
                     for cam_name in first_imgs.keys():
@@ -106,7 +117,7 @@ class SimRecorder:
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         fname = self.out / f"episode_{timestamp}.h5"
-        t = threading.Thread(target=worker, args=(data_snapshot, fname))
+        t = threading.Thread(target=worker, args=(data_snapshot, metadata_snapshot, fname))
         t.start()
         self.save_threads.append(t)  # 스레드 추적
 
@@ -142,6 +153,7 @@ def randomize_phantom_pos(model, data, phantom_id, rot_id):
     model.body_quat[rot_id] = new_quat
     print(f">>> Randomize: Pos=({offset_x:.2f}, {offset_y:.2f}), Angle={random_angle_deg:.1f} deg")
     mujoco.mj_forward(model, data)
+    return np.array([offset_x, offset_y, offset_z], dtype=np.float32), new_quat.astype(np.float32), np.float32(random_angle_deg)
 
 # === Args ===
 def _parse_args():
@@ -212,8 +224,11 @@ def main():
     while episode_count < MAX_EPISODES:
         mujoco.mj_resetData(model, data)
         data.qpos[:6] = home_pose
+        phantom_offset = np.zeros(3, dtype=np.float32)
+        phantom_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        phantom_angle_deg = np.float32(0.0)
         if args.randomize_phantom_pos:
-            randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
+            phantom_offset, phantom_quat, phantom_angle_deg = randomize_phantom_pos(model, data, phantom_body_id, rotating_id)
         mujoco.mj_forward(model, data)
         
         last_ee_pose = get_ee_pose_6d_scaled()
@@ -223,7 +238,14 @@ def main():
         start_tip, start_back = data.site_xpos[tip_id].copy(), data.site_xpos[back_id].copy()
         needle_len = np.linalg.norm(start_tip - start_back)
         
-        recorder.start()
+        recorder.start({
+            "initial_qpos": np.rad2deg(data.qpos[:n_motors].copy()).astype(np.float32),
+            "phantom_offset": phantom_offset,
+            "phantom_quat": phantom_quat,
+            "phantom_angle_deg": np.array(phantom_angle_deg, dtype=np.float32),
+            "target_entry_world": p_entry.astype(np.float32),
+            "target_depth_world": p_depth.astype(np.float32),
+        })
         step_count, success = 0, False
 
         while True:

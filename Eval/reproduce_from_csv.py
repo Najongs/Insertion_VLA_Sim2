@@ -41,6 +41,10 @@ class ReplayRecorder:
     def __init__(self, output_path):
         self.output_path = output_path
         self.buffer = []
+        self.metadata = {}
+
+    def set_metadata(self, metadata):
+        self.metadata = dict(metadata or {})
 
     def add(self, frames, qpos, ee_pose, action, frame_idx, sensor_dist):
         self.buffer.append({
@@ -62,6 +66,8 @@ class ReplayRecorder:
             with h5py.File(self.output_path, 'w') as f:
                 obs = f.create_group("observations")
                 img_grp = obs.create_group("images")
+                if self.metadata:
+                    meta_grp = f.create_group("metadata")
 
                 q_data = np.array([x['q'] for x in self.buffer], dtype=np.float32)
                 p_data = np.array([x['p'] for x in self.buffer], dtype=np.float32)
@@ -74,6 +80,14 @@ class ReplayRecorder:
                 obs.create_dataset("sensor_dist", data=sensor_data, compression="gzip")
                 f.create_dataset("action", data=act_data, compression="gzip")
                 f.create_dataset("frame", data=frame_data, compression="gzip")
+
+                if self.metadata:
+                    for key, value in self.metadata.items():
+                        value_arr = np.asarray(value)
+                        if value_arr.shape == ():
+                            meta_grp.create_dataset(key, data=value_arr)
+                        else:
+                            meta_grp.create_dataset(key, data=value_arr, compression="gzip")
 
                 # Save images
                 first_imgs = self.buffer[0]["imgs"]
@@ -239,6 +253,60 @@ def load_actions_from_csv(csv_path, mode='pred'):
     return actions
 
 
+def load_initial_qpos_from_episode(episode_path):
+    """Load the initial joint position from the source episode HDF5."""
+    print(f"📖 Reading initial qpos from episode: {episode_path}...")
+    with h5py.File(episode_path, 'r') as f:
+        if 'observations' not in f or 'qpos' not in f['observations']:
+            raise ValueError("Episode does not contain observations/qpos")
+
+        qpos = f['observations']['qpos'][:]
+        if len(qpos) == 0:
+            raise ValueError("Episode observations/qpos is empty")
+
+        initial_qpos = np.asarray(qpos[0], dtype=np.float32)
+        if initial_qpos.shape[0] < 6:
+            raise ValueError(f"Episode initial qpos has invalid shape: {initial_qpos.shape}")
+
+    print(f"   Loaded episode start qpos: {initial_qpos[:6]}")
+    return initial_qpos[:6]
+
+
+def load_episode_metadata(episode_path):
+    """Load optional episode metadata needed to reproduce phantom pose."""
+    metadata = {}
+    with h5py.File(episode_path, 'r') as f:
+        if 'metadata' not in f:
+            return metadata
+
+        meta_group = f['metadata']
+        for key in meta_group.keys():
+            metadata[key] = meta_group[key][()]
+
+    return metadata
+
+
+def apply_episode_metadata(model, data, metadata):
+    """Apply stored phantom pose metadata to the MuJoCo model if available."""
+    if not metadata:
+        print("   No episode metadata found; using default phantom pose")
+        return
+
+    phantom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "phantom_assembly")
+    rotating_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rotating_assembly")
+
+    if "phantom_offset" in metadata:
+        model.body_pos[phantom_id] = np.asarray(metadata["phantom_offset"], dtype=np.float64)
+        print(f"   Applied phantom offset: {model.body_pos[phantom_id]}")
+
+    if "phantom_quat" in metadata:
+        quat = np.asarray(metadata["phantom_quat"], dtype=np.float64)
+        model.body_quat[rotating_id] = quat
+        print(f"   Applied phantom quaternion: {quat}")
+
+    mujoco.mj_forward(model, data)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Reproduce trajectory from CSV evaluation results"
@@ -261,6 +329,12 @@ def main():
         type=str,
         default=None,
         help="Output HDF5 file path (default: reproduced_{mode}.h5)"
+    )
+    parser.add_argument(
+        "--episode",
+        type=str,
+        default=None,
+        help="Optional source episode HDF5. If provided, use observations/qpos[0] as the initial state."
     )
     parser.add_argument(
         "--start_qpos",
@@ -286,6 +360,19 @@ def main():
     if args.output is None:
         output_dir = csv_path.parent
         args.output = str(output_dir / f"reproduced_{args.mode}.h5")
+
+    episode_path = None
+    episode_metadata = {}
+    if args.episode is not None:
+        episode_path = Path(args.episode)
+        if not episode_path.exists():
+            print(f"❌ Error: Episode file not found: {episode_path}")
+            return
+        try:
+            episode_metadata = load_episode_metadata(str(episode_path))
+        except Exception as e:
+            print(f"❌ Error loading episode metadata: {e}")
+            return
 
     print(f"\n{'='*80}")
     print(f"CSV Trajectory Reproduction")
@@ -330,11 +417,19 @@ def main():
 
     # Initialize recorder
     recorder = ReplayRecorder(args.output)
+    recorder.set_metadata(episode_metadata)
 
     # Set initial position
     if args.start_qpos is not None:
         initial_qpos = np.array(args.start_qpos, dtype=np.float32)
         print(f"   Using custom start position: {initial_qpos}")
+    elif episode_path is not None:
+        try:
+            initial_qpos = load_initial_qpos_from_episode(str(episode_path))
+            print(f"   Using episode start position: {initial_qpos}")
+        except Exception as e:
+            print(f"❌ Error loading episode initial qpos: {e}")
+            return
     else:
         initial_qpos = HOME_QPOS
         print(f"   Using home position: {initial_qpos}")
@@ -342,6 +437,7 @@ def main():
     # Initialize simulation
     print("\n🚀 Starting trajectory reproduction...")
     mujoco.mj_resetData(model, data)
+    apply_episode_metadata(model, data, episode_metadata)
     data.qpos[:n_motors] = np.deg2rad(initial_qpos)
     mujoco.mj_forward(model, data)
     current_q_guess = np.deg2rad(initial_qpos)

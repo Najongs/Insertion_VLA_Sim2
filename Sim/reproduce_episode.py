@@ -15,7 +15,8 @@ import pathlib
 from tqdm import tqdm
 
 # === Configuration (Must match Save_dataset.py) ===
-MODEL_PATH = "meca_add.xml"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(SCRIPT_DIR, "meca_add.xml")
 IMG_WIDTH = 640
 IMG_HEIGHT = 480
 
@@ -23,6 +24,10 @@ class ReplayRecorder:
     def __init__(self, output_path):
         self.output_path = output_path
         self.buffer = []
+        self.metadata = {}
+
+    def set_metadata(self, metadata):
+        self.metadata = dict(metadata or {})
 
     def add(self, frames, qpos, ee_pose, action, timestamp, phase, sensor_dist):
         self.buffer.append({
@@ -45,6 +50,8 @@ class ReplayRecorder:
             with h5py.File(self.output_path, 'w') as f:
                 obs = f.create_group("observations")
                 img_grp = obs.create_group("images")
+                if self.metadata:
+                    meta_grp = f.create_group("metadata")
 
                 # Combine list of dicts into arrays
                 q_data = np.array([x['q'] for x in self.buffer], dtype=np.float32)
@@ -60,6 +67,14 @@ class ReplayRecorder:
                 f.create_dataset("action", data=act_data, compression="gzip")
                 f.create_dataset("timestamp", data=ts_data, compression="gzip")
                 f.create_dataset("phase", data=phase_data, compression="gzip")
+
+                if self.metadata:
+                    for key, value in self.metadata.items():
+                        value_arr = np.asarray(value)
+                        if value_arr.shape == ():
+                            meta_grp.create_dataset(key, data=value_arr)
+                        else:
+                            meta_grp.create_dataset(key, data=value_arr, compression="gzip")
 
                 # Save images
                 first_imgs = self.buffer[0]["imgs"]
@@ -98,6 +113,38 @@ def get_ee_pose_6d_scaled(model, data, link6_id):
             y = 0.0
         return np.concatenate([pos, [r, p, y]])
     return np.zeros(6, dtype=np.float32)
+
+
+def load_episode_metadata(h5_file):
+    metadata = {}
+    if 'metadata' not in h5_file:
+        return metadata
+
+    meta_group = h5_file['metadata']
+    for key in meta_group.keys():
+        metadata[key] = meta_group[key][()]
+
+    return metadata
+
+
+def apply_episode_metadata(model, data, metadata):
+    if not metadata:
+        print("No episode metadata found; using default phantom pose.")
+        return
+
+    phantom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "phantom_assembly")
+    rotating_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "rotating_assembly")
+
+    if "phantom_offset" in metadata:
+        model.body_pos[phantom_id] = np.asarray(metadata["phantom_offset"], dtype=np.float64)
+        print(f"Applied phantom offset: {model.body_pos[phantom_id]}")
+
+    if "phantom_quat" in metadata:
+        quat = np.asarray(metadata["phantom_quat"], dtype=np.float64)
+        model.body_quat[rotating_id] = quat
+        print(f"Applied phantom quaternion: {quat}")
+
+    mujoco.mj_forward(model, data)
 
 def main():
     parser = argparse.ArgumentParser(description="Reproduce dataset from joint angles.")
@@ -149,12 +196,14 @@ def main():
         source_action = f['action'][:]
         source_timestamp = f['timestamp'][:]
         source_phase = f['phase'][:]
+        source_metadata = load_episode_metadata(f)
         
         # Ensure lengths match
         n_frames = len(source_qpos)
         print(f"Found {n_frames} frames.")
 
     recorder = ReplayRecorder(args.output_file)
+    recorder.set_metadata(source_metadata)
     
     # Important: The source qpos is in DEGREES (based on Save_dataset.py).
     # Mujoco expects RADIANS.
@@ -163,11 +212,8 @@ def main():
     
     # Reset simulation
     mujoco.mj_resetData(model, data)
-    
-    # NOTE: We are NOT randomizing the phantom position here because we don't know the seed/pos.
-    # This implies the phantom will be at the default location.
-    # If the source run had a randomized phantom, the images and sensor values WILL differ.
-    
+    apply_episode_metadata(model, data, source_metadata)
+
     last_ee_pose = None # To calculate delta if we wanted to, but we copy action.
 
     for i in tqdm(range(n_frames), desc="Reproducing"):

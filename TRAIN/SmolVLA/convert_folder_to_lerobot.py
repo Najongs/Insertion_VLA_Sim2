@@ -87,6 +87,48 @@ def create_features(cameras: list[str]) -> dict:
         }
     return features
 
+
+def detect_episode_cameras(ep_dir: Path) -> list[str]:
+    """Detect available camera view directories for a single episode."""
+    cameras = []
+    meta_path = ep_dir / "metadata.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+            cameras = meta.get("camera_views", [])
+        except Exception:
+            cameras = []
+
+    if not cameras:
+        cameras = [cam.name for cam in ep_dir.iterdir() if cam.is_dir() and cam.name.startswith("View")]
+
+    return sorted(cameras)
+
+
+def resolve_dataset_cameras(episode_dirs: list[Path], requested_cameras: list[str] | None = None) -> list[str]:
+    """
+    Resolve a camera schema that is valid across all episodes.
+
+    If cameras are explicitly requested, keep only those that exist in every episode.
+    Otherwise use the intersection of all detected camera views.
+    """
+    if not episode_dirs:
+        raise ValueError("No episodes found")
+
+    per_episode_cameras = [set(detect_episode_cameras(ep_dir)) for ep_dir in episode_dirs]
+    common_cameras = sorted(set.intersection(*per_episode_cameras)) if per_episode_cameras else []
+
+    if requested_cameras:
+        cameras = [cam for cam in requested_cameras if cam in common_cameras]
+    else:
+        cameras = common_cameras
+
+    if not cameras:
+        raise ValueError("No common camera views found across episodes")
+
+    return cameras
+
 # ─── Single shard conversion ──────────────────────────────────────────────────
 
 def convert_shard(
@@ -98,6 +140,7 @@ def convert_shard(
     image_writer_threads: int,
     shard_id: int,
     total_shards: int,
+    cameras: list[str],
 ):
     shard_repo_id = f"{repo_id}_shard{shard_id:03d}" if total_shards > 1 else repo_id
     shard_output = output_dir / shard_repo_id if total_shards > 1 else output_dir
@@ -109,17 +152,6 @@ def convert_shard(
     total_episodes = len(episode_dirs)
     logger.info(f"[Shard {shard_id}/{total_shards}] Converting {total_episodes} episodes → {shard_output}")
 
-    # To initialize LeRobotDataset, we need to know the camera views which must be consistent
-    # across ALL episodes in this specific repo. We'll use the first episode to determine schema.
-    first_ep = episode_dirs[0]
-    with open(first_ep / "metadata.json", "r") as f:
-        meta = json.load(f)
-    
-    cameras = meta.get("camera_views", [])
-    if not cameras: # fallback logic if metadata is empty
-        cameras = [cam.name for cam in first_ep.iterdir() if cam.is_dir() and cam.name.startswith("View")]
-        cameras.sort()
-    
     features = create_features(cameras)
 
     dataset = LeRobotDataset.create(
@@ -289,6 +321,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--shard-id", type=int, default=None)
     parser.add_argument("--merge-only", action="store_true")
+    parser.add_argument("--camera-views", nargs="*", default=None, help="Optional camera views to use, e.g. View1 View2 View3")
     
     args = parser.parse_args()
 
@@ -307,9 +340,15 @@ def main():
         episode_dirs = episode_dirs[: args.max_episodes]
     
     logger.info(f"Total Valid Episodes Found: {len(episode_dirs)}")
+    if not episode_dirs:
+        logger.warning(f"No valid episodes found under {dataset_dir}. Skipping conversion.")
+        return
+
+    cameras = resolve_dataset_cameras(episode_dirs, args.camera_views)
+    logger.info(f"Using common camera schema: {cameras}")
 
     if args.num_workers == 1 and args.shard_id is None:
-        convert_shard(episode_dirs, output_dir, args.repo_id, args.fps, args.vcodec, args.image_writer_threads, 0, 1)
+        convert_shard(episode_dirs, output_dir, args.repo_id, args.fps, args.vcodec, args.image_writer_threads, 0, 1, cameras)
         return
 
     num_workers = args.num_workers
@@ -320,7 +359,7 @@ def main():
         sid = args.shard_id
         if sid >= len(shards):
             return
-        convert_shard(shards[sid], output_dir, args.repo_id, args.fps, args.vcodec, args.image_writer_threads, sid, num_workers)
+        convert_shard(shards[sid], output_dir, args.repo_id, args.fps, args.vcodec, args.image_writer_threads, sid, num_workers, cameras)
         return
 
     logger.info(f"Launching {num_workers} worker subprocesses...")
@@ -338,6 +377,8 @@ def main():
             "--num-workers", str(num_workers),
             "--shard-id", str(sid),
         ]
+        if args.camera_views:
+            cmd.extend(["--camera-views", *args.camera_views])
         log_file = output_dir / f"shard_{sid:03d}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         f_log = open(log_file, "w")

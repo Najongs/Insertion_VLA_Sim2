@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 모든 New_dataset 들을 순차적으로 LeRobot 포맷으로 변환하는 스크립트입니다.
-# 각 데이터셋마다 카메라 설정 개수(View 개수)가 다를 수 있으므로, repository 이름을 다르게 하여 개별 병렬 변환합니다.
+# 데이터셋마다 View 개수가 다를 수 있으므로 공통으로 사용하는 View1~View3만 변환합니다.
 
 cd /data/public/NAS/Insertion_VLA_Sim2/TRAIN/SmolVLA
 
-DATASETS=("New_dataset2" "New_dataset3" "New_dataset4" "New_dataset5" "New_dataset6")
+DATASETS=("New_dataset" "New_dataset2" "New_dataset3" "New_dataset4" "New_dataset5" "New_dataset6")
 
 for DS in "${DATASETS[@]}"; do
     echo "================================================="
@@ -18,6 +18,7 @@ for DS in "${DATASETS[@]}"; do
     python3 convert_folder_to_lerobot.py \
         --dataset-dir "/data/public/NAS/Insertion_VLA_Sim2/Dataset/dataset/$DS" \
         --repo-id "$REPO_ID" \
+        --camera-views View1 View2 View3 \
         --num-workers 8
     
     if [ $? -eq 0 ]; then
