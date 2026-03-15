@@ -53,6 +53,8 @@ VIEW_TO_CAMERA_MAP = {
     'observation.images.View1': 'observation.images.camera1',
     'observation.images.View2': 'observation.images.camera2',
     'observation.images.View3': 'observation.images.camera3',
+    'observation.images.View4': 'observation.images.camera4',
+    'observation.images.View5': 'observation.images.camera5',
 }
 
 
@@ -60,7 +62,7 @@ def patch_dataset_metadata_and_structure(dataset_path: Path):
     """
     Patches a LeRobot dataset so its schema matches the expected 'eye_trocar_real' baseline:
     1. Sets robot_type = 'surgical_robot_6dof'
-    2. Maps features View1, View2, View3 -> camera1, camera2, camera3
+    2. Maps features View1..View5 -> camera1..camera5
     3. Renames physical video directories
     4. Updates Parquet column headers
     """
@@ -92,9 +94,6 @@ def patch_dataset_metadata_and_structure(dataset_path: Path):
                 if key in VIEW_TO_CAMERA_MAP:
                     new_features[VIEW_TO_CAMERA_MAP[key]] = val
                     changed = True
-                elif key.startswith('observation.images.View'):
-                    # Drop extra views (View4, View5) to match the 3-camera baseline
-                    changed = True
                 else:
                     new_features[key] = val
                     
@@ -111,20 +110,13 @@ def patch_dataset_metadata_and_structure(dataset_path: Path):
     # ---------------------------------------------------------
     videos_dir = dataset_path / "videos"
     if videos_dir.exists():
-        # Rename 1 to 3
-        for i in range(1, 4):
+        # Rename 1 to 5
+        for i in range(1, 6):
             old_dir = videos_dir / f"observation.images.View{i}"
             new_dir = videos_dir / f"observation.images.camera{i}"
             if old_dir.exists():
                 old_dir.rename(new_dir)
                 print(f"  - Renamed video dir: View{i} -> camera{i}")
-        
-        # Remove 4 and 5
-        for i in [4, 5]:
-            old_dir = videos_dir / f"observation.images.View{i}"
-            if old_dir.exists():
-                shutil.rmtree(old_dir)
-                print(f"  - Removed unused video dir: View{i}")
 
     # ---------------------------------------------------------
     # 3. Patch Parquet Table Columns
@@ -141,10 +133,7 @@ def patch_dataset_metadata_and_structure(dataset_path: Path):
                 
                 needs_rewrite = False
                 for name in col_names:
-                    if 'View4' in name or 'View5' in name:
-                        columns_to_drop.append(name)
-                        needs_rewrite = True
-                    elif 'View1' in name:
+                    if 'View1' in name:
                         new_names.append(name.replace('View1', 'camera1'))
                         needs_rewrite = True
                     elif 'View2' in name:
@@ -152,6 +141,12 @@ def patch_dataset_metadata_and_structure(dataset_path: Path):
                         needs_rewrite = True
                     elif 'View3' in name:
                         new_names.append(name.replace('View3', 'camera3'))
+                        needs_rewrite = True
+                    elif 'View4' in name:
+                        new_names.append(name.replace('View4', 'camera4'))
+                        needs_rewrite = True
+                    elif 'View5' in name:
+                        new_names.append(name.replace('View5', 'camera5'))
                         needs_rewrite = True
                     else:
                         new_names.append(name)
